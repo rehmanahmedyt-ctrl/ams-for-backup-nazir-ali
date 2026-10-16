@@ -571,18 +571,36 @@ def import_snapshot(source_path, target_db_path, *, mode: str = "clean_replace",
         only_source = sorted(source_set - set(target_tables))
         order = _fk_dependency_order(tcon, shared)
 
-        # Column compatibility: abort if the target needs columns the source
-        # does not carry (different schema generations).
+        # Column compatibility: the target schema is authoritative.  A source
+        # snapshot produced by an older AMS build may lack columns that the
+        # current target has added since (e.g. supplier.transferred_to_id).
+        # Such columns are filled with NULL (or their declared default) when
+        # they are nullable / have a default, so the import stays graceful
+        # instead of aborting.  A genuinely required column (NOT NULL with no
+        # default) that the source lacks still aborts, because silently
+        # fabricating a value would corrupt the data.
         for t in order:
             tgt_cols = table_columns(tcon, t)
             src_cols = table_columns(scon, t)
             missing = [c for c in tgt_cols if c not in src_cols]
-            if missing:
+            if not missing:
+                continue
+            # Inspect nullability / defaults on the target side.
+            info = {r[1]: r for r in tcon.execute(
+                f"PRAGMA table_info({_q(t)})").fetchall()}
+            hard = []
+            for c in missing:
+                row = info.get(c)
+                notnull = row[3] if row else 0
+                default = row[4] if row else None
+                if notnull and default is None:
+                    hard.append(c)
+            if hard:
                 raise FullDbSyncError(
-                    f"Table '{t}' in the target needs columns the source lacks: "
-                    f"{missing}. Export a fresh snapshot from the same AMS "
-                    "version, or start the target app once so its schema "
-                    "bootstrap adds the columns."
+                    f"Table '{t}' in the target needs columns the source lacks "
+                    f"and which cannot be defaulted: {hard}. Export a fresh "
+                    "snapshot from the same AMS version, or start the target "
+                    "app once so its schema bootstrap adds the columns."
                 )
 
         # ---- Unique-index relaxation -------------------------------------
@@ -634,11 +652,27 @@ def import_snapshot(source_path, target_db_path, *, mode: str = "clean_replace",
         tcon.execute("BEGIN")
         try:
             for t in order:
-                cols = table_columns(tcon, t)  # == src cols for shared tables
+                cols = table_columns(tcon, t)  # target cols (authoritative)
+                src_cols = set(table_columns(scon, t))
+                info = {r[1]: r for r in tcon.execute(
+                    f"PRAGMA table_info({_q(t)})").fetchall()}
+                # Build the SELECT list against the *source*: use the real
+                # column when present, otherwise NULL / its declared default.
+                select_parts = []
+                for c in cols:
+                    if c in src_cols:
+                        select_parts.append(_q(c))
+                    else:
+                        row = info.get(c)
+                        default = row[4] if row else None
+                        if default is not None:
+                            select_parts.append(str(default))
+                        else:
+                            select_parts.append("NULL")
                 col_sql = ", ".join(_q(c) for c in cols)
                 marks = ", ".join("?" for _ in cols)
                 ins_sql = f"INSERT INTO {_q(t)} ({col_sql}) VALUES ({marks})"
-                sel_sql = f"SELECT {col_sql} FROM {_q(t)}"
+                sel_sql = "SELECT " + ", ".join(select_parts) + f" FROM {_q(t)}"
                 n = 0
                 if mode == "clean_replace":
                     cur = scon.execute(sel_sql)
