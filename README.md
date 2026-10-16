@@ -2,6 +2,10 @@
 
 The application source is at the repository root (the original `ams.zip` is kept as an archival copy). Deployments use the signed GitHub push webhook in `deploy_hook.py`: after first-time setup, a push to the configured branch is pulled on PythonAnywhere and requests a WSGI reload.
 
+> **Start here:** [`DEPLOY_STEP_BY_STEP.md`](DEPLOY_STEP_BY_STEP.md) is the complete, copy-paste walkthrough
+> (first-time deployment, how to verify that a push really deployed, everyday workflow, troubleshooting).
+> This README is the short reference for the same process.
+
 ## First-time setup for `nazirali789.pythonanywhere.com`
 
 1. Create/open the web app on PythonAnywhere and note the **exact WSGI file path** shown in its Web tab. Open a Bash console.
