@@ -57,7 +57,7 @@ def export_clients():
 @bp.route('/add_user', methods=['POST'])
 @login_required
 def add_user():
-    if current_user.role != 'admin':
+    if not _is_master_admin():
         flash('Unauthorized', 'danger')
         return redirect(url_for('settings'))
     un = request.form.get('username', '').strip()
@@ -66,17 +66,21 @@ def add_user():
         raw_pw = os.environ.get('DEFAULT_TENANT_USER_PASSWORD', 'User@12345')
     pw = generate_password_hash(raw_pw)
     rl = request.form.get('role', 'user')
+    if rl not in ('user', 'admin'):
+        flash('Invalid role', 'danger')
+        return redirect(url_for('settings'))
 
     if not un:
         flash('Username is required', 'danger')
         return redirect(url_for('settings'))
-    if un.strip().lower() in ('admin', 'root'):
+    if un.strip().lower() in ('admin', 'root', (os.environ.get('DEFAULT_ADMIN_USER') or 'Admin').strip().lower()):
         flash('Admin is built into the app and cannot be created again.', 'danger')
         return redirect(url_for('settings'))
     if User.query.filter_by(username=un).first():
         flash('Username already exists', 'danger')
     else:
         permission_values = _permissions_from_request_form()
+        permission_values['can_access_settings'] = (rl == 'admin' and permission_values['can_access_settings'])
         restrict_backdated_grn_edit = ('restrict_backdated_edit' in request.form)
         access_mode = (request.form.get('access_mode') or 'read_write').strip().lower()
         if access_mode not in ('read_only', 'read_write'):
@@ -103,17 +107,22 @@ def add_user():
 @bp.route('/edit_user_permissions/<int:id>', methods=['POST'])
 @login_required
 def edit_user_permissions(id):
-    if current_user.role != 'admin':
+    if not _is_master_admin():
         flash('Unauthorized', 'danger')
         return redirect(url_for('settings'))
     u = db.session.get(User, id)
-    if u and u.role != 'root' and u.username != 'admin':
-        u.role = request.form.get('role', 'user')
+    if u and u.role != 'root' and not _is_master_admin(u):
+        role = request.form.get('role', 'user')
+        if role not in ('user', 'admin'):
+            flash('Invalid role', 'danger')
+            return redirect(url_for('settings'))
+        u.role = role
         raw_pw = str(request.form.get('password') or '').strip()
         if raw_pw:
             u.password_hash = generate_password_hash(raw_pw)
             u.password_plain = None
         permission_values = _permissions_from_request_form()
+        permission_values['can_access_settings'] = (role == 'admin' and permission_values['can_access_settings'])
         for field, value in permission_values.items():
             setattr(u, field, value)
         u.can_manage_directory = (
@@ -133,11 +142,11 @@ def edit_user_permissions(id):
 @bp.route('/delete_user/<int:id>', methods=['POST'])
 @login_required
 def delete_user(id):
-    if current_user.role != 'admin':
+    if not _is_master_admin():
         flash('Unauthorized', 'danger')
         return redirect(url_for('settings'))
     u = db.session.get(User, id)
-    if u and u.role != 'root' and u.username != 'admin':
+    if u and u.role != 'root' and not _is_master_admin(u):
         if u.id == current_user.id:
             flash('You cannot deactivate your own account.', 'danger')
             return redirect(url_for('settings'))
@@ -153,11 +162,11 @@ def delete_user(id):
 @bp.route('/toggle_user_status/<int:id>', methods=['POST'])
 @login_required
 def toggle_user_status(id):
-    if current_user.role != 'admin':
+    if not _is_master_admin():
         flash('Unauthorized', 'danger')
         return redirect(url_for('settings'))
     u = db.session.get(User, id)
-    if u and u.role != 'root' and (u.username or '').strip().lower() != 'admin':
+    if u and u.role != 'root' and not _is_master_admin(u):
         if u.id == current_user.id:
             flash('You cannot change your own status.', 'danger')
             return redirect(url_for('settings'))
@@ -172,9 +181,9 @@ def toggle_user_status(id):
 @bp.route('/update_settings', methods=['POST'])
 @login_required
 def update_settings():
-    if current_user.role != 'admin':
+    if not _can_access_settings():
         flash('Unauthorized', 'danger')
-        return redirect(url_for('settings'))
+        return redirect(url_for('index'))
 
     settings_obj = Settings.query.first()
     if not settings_obj:

@@ -275,6 +275,7 @@ ENDPOINT_PERMISSION_MAP = {
     'api_notifications_due': 'can_manage_notifications',
     'settings': 'can_access_settings',
     'activity_log_page': 'can_access_settings',
+    'login_sessions_page': 'can_access_settings',
     'change_password': 'can_access_settings',
     'void_audit_page': 'can_access_settings',
     'restore_audit_record': 'can_access_settings',

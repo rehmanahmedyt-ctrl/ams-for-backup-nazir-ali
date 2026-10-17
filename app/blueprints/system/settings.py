@@ -4,7 +4,7 @@ from ._common import *  # noqa
 @bp.route('/debug/db')
 @login_required
 def debug_db():
-    if getattr(current_user, 'role', None) != 'admin':
+    if not _can_access_settings():
         abort(403)
     try:
         st = os.stat(db_path) if os.path.exists(db_path) else None
@@ -23,7 +23,7 @@ def debug_db():
 @bp.route('/settings')
 @login_required
 def settings():
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
     settings_obj = Settings.query.first()
@@ -39,6 +39,7 @@ def settings():
     # Single source of truth for the user-role UI: feature groups + the
     # permission value of every user, so the checkboxes and the access
     # matrix always show exactly what exists and who has it.
+    from app.services.permissions import _is_master_admin
     from app.services.constants import (
         EDITABLE_USER_PERMISSION_FIELDS,
         PERMISSION_GROUPS,
@@ -64,13 +65,15 @@ def settings():
         permission_fields=EDITABLE_USER_PERMISSION_FIELDS,
         user_perm_values=user_perm_values,
         default_permissions=default_permissions,
+        is_master_admin=_is_master_admin(),
+        master_admin_username=(os.environ.get('DEFAULT_ADMIN_USER') or 'Admin').strip().lower(),
     )
 
 
 @bp.route('/settings/activity')
 @login_required
 def activity_log_page():
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
     q = (request.args.get('q') or '').strip()
@@ -90,7 +93,7 @@ def activity_log_page():
 @bp.route('/settings/sessions')
 @login_required
 def login_sessions_page():
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
     from utils.sessions import list_active_sessions
@@ -103,7 +106,7 @@ def login_sessions_page():
 @bp.route('/void_audit')
 @login_required
 def void_audit_page():
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
 
@@ -294,7 +297,7 @@ def void_audit_page():
 @bp.route('/void_audit/restore/<string:entity>/<int:record_id>', methods=['POST'])
 @login_required
 def restore_audit_record(entity, record_id):
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
 

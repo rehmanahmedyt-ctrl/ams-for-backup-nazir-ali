@@ -590,9 +590,9 @@
                 {% endif %}
                 {% endif %}
 
+                {% if user_can('can_access_settings') %}
                 <div class="text-white-50 small fw-bold px-4 mt-4 mb-2 text-uppercase" style="font-size: 0.7rem;">System</div>
-                {% if current_user.role != 'root' and (current_user.role == 'admin' or current_user.can_access_settings) %}
-<a href="/settings" class="nav-link {{ 'active' if request.path == '/settings' }}" onclick="closeSidebar()">
+                <a href="/settings" class="nav-link {{ 'active' if request.path == '/settings' }}" onclick="closeSidebar()">
                     <i class="bi bi-gear"></i> Settings
                 </a>
                 {% endif %}

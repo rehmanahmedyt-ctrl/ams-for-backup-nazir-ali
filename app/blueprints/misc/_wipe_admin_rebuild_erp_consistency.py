@@ -4,7 +4,7 @@ from ._common import *  # noqa
 @bp.route('/admin/rebuild_erp_consistency', methods=['POST'])
 @login_required
 def admin_rebuild_erp_consistency():
-    if current_user.role != 'admin' and not _user_can('can_access_settings'):
+    if not _can_access_settings():
         flash('Unauthorized: Admin access required.', 'danger')
         return redirect(url_for('index'))
     client_id = _safe_int(request.form.get('client_id'))
