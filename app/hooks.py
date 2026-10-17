@@ -43,11 +43,11 @@ def _safe_flash_text(text):
 
 
 def register_hooks(app):
-    from flask import jsonify, flash, redirect, url_for, session
+    from flask import jsonify, flash, redirect, url_for, session, render_template
     from flask_login import current_user
     from models import Client, Material, DeliveryPerson, Settings
     from app.services.backup import _start_hourly_backup_worker, _start_reconcile_worker
-    from app.services.permissions import _user_can
+    from app.services.permissions import _user_can, _can_access_settings
     from app.services.constants import (
         _AUTO_BACKUP_ENABLED,
         BLUEPRINT_PERMISSION_PREFIXES,
@@ -254,16 +254,23 @@ def register_hooks(app):
     def _enforce_user_permissions():
         if not current_user.is_authenticated:
             return None
+        endpoint = request.endpoint or ''
+        # Settings is the one permission admins do not inherit automatically.
+        # Check it before the usual admin bypass (including direct URLs).
+        short_endpoint = endpoint.rsplit('.', 1)[-1]
+        needed = ENDPOINT_PERMISSION_MAP.get(endpoint)
+        if not needed:
+            needed = ENDPOINT_PERMISSION_MAP.get(short_endpoint)
+        if ((needed == 'can_access_settings' or short_endpoint in (
+                'login_sessions_page', 'update_settings', 'debug_db',
+                'reconcile_data', 'delete_selected_data', 'admin_rebuild_erp_consistency'))
+                and not _can_access_settings()):
+            flash('Permission denied for Settings.', 'danger')
+            return redirect(url_for('index'))
         if current_user.role in ('admin', 'root'):
             return None
-        endpoint = request.endpoint or ''
-        # Core blueprints are registered before the legacy short aliases, so
-        # Flask normally reports endpoints such as ``sales.add_booking`` while
-        # the permission table historically used the short name.  Falling
-        # back to the final component keeps both route forms protected.
-        needed = ENDPOINT_PERMISSION_MAP.get(endpoint)
-        if not needed and '.' in endpoint:
-            needed = ENDPOINT_PERMISSION_MAP.get(endpoint.rsplit('.', 1)[-1])
+        # Qualified and short endpoint names were resolved before the admin
+        # bypass, so both route forms share the same permission check.
         # Whole-feature-pack fallback (e.g. every /accounts route).
         if not needed and '.' in endpoint:
             needed = BLUEPRINT_PERMISSION_PREFIXES.get(endpoint.split('.', 1)[0])
@@ -276,6 +283,10 @@ def register_hooks(app):
             allowed = _user_can(needed)
         if allowed:
             return None
+        if short_endpoint == 'index':
+            # The dashboard can be unticked. Show only navigation to granted
+            # modules instead of redirecting an unprivileged user to '/' again.
+            return render_template('limited_access.html')
         flash('Permission denied for this module.', 'danger')
         return redirect(url_for('index'))
 

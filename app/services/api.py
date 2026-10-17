@@ -196,6 +196,8 @@ from app.services.notify import (  # noqa: F401
 )
 from app.services.permissions import (  # noqa: F401
     _can_manage_categories,
+    _can_access_settings,
+    _is_master_admin,
     _permissions_from_request_form,
     _user_can,
     load_user,
@@ -495,6 +497,8 @@ __all__ = [
     '_build_notification_rows',
     '_resolve_reminder_with_contact',
     '_can_manage_categories',
+    '_can_access_settings',
+    '_is_master_admin',
     '_permissions_from_request_form',
     '_user_can',
     'load_user',

@@ -87,9 +87,26 @@ def require_root():
     abort(404)
 
 
+def _is_master_admin(user=None):
+    """The built-in Admin account alone may delegate roles and Settings access."""
+    user = user if user is not None else current_user
+    return (getattr(user, 'role', None) == 'admin'
+            and (getattr(user, 'username', '') or '').strip().lower()
+            == (os.environ.get('DEFAULT_ADMIN_USER') or 'Admin').strip().lower())
+
+
+def _can_access_settings(user=None):
+    """Standard users never get Settings, even with a legacy stored grant."""
+    user = user if user is not None else current_user
+    return (getattr(user, 'role', None) == 'admin'
+            and (_is_master_admin(user) or bool(getattr(user, 'can_access_settings', False))))
+
+
 def _user_can(permission_name):
     if not current_user.is_authenticated:
         return False
+    if permission_name == 'can_access_settings':
+        return _can_access_settings()
     if current_user.role in ('admin', 'root'):
         return True
 
