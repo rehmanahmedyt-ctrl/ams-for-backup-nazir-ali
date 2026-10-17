@@ -45,7 +45,8 @@ def settings():
         PERMISSION_GROUPS,
         USER_PERMISSION_DEFAULTS,
     )
-    users_all = User.query.all()
+    master_admin_username = (os.environ.get('DEFAULT_ADMIN_USER') or 'Admin').strip().lower()
+    users_all = User.query.order_by(User.username.asc()).all()
     user_perm_values = {
         u.id: {field: bool(getattr(u, field, None)) for field in EDITABLE_USER_PERMISSION_FIELDS}
         for u in users_all
@@ -54,6 +55,59 @@ def settings():
         field: bool(USER_PERMISSION_DEFAULTS.get(field, False))
         for field in EDITABLE_USER_PERMISSION_FIELDS
     }
+
+    # Keep the role-management screen useful at a glance without changing any
+    # permission rules.  The route handlers remain the single authority for
+    # edits; these values are presentation-only summaries for the Settings UI.
+    permission_labels = {
+        field: label
+        for _group_title, fields in PERMISSION_GROUPS
+        for field, label in fields
+    }
+    module_permission_fields = [
+        field for field in EDITABLE_USER_PERMISSION_FIELDS
+        if field != 'can_access_settings'
+    ]
+    user_permission_names = {}
+    user_permission_counts = {}
+    role_management_stats = {
+        'total': len(users_all),
+        'active': 0,
+        'suspended': 0,
+        'administrators': 0,
+        'standard': 0,
+        'read_only': 0,
+    }
+    for user in users_all:
+        is_admin = user.role in ('admin', 'root')
+        is_master = (user.username or '').strip().lower() == master_admin_username
+        is_active = (user.status or 'active').strip().lower() == 'active'
+        if is_active:
+            role_management_stats['active'] += 1
+        else:
+            role_management_stats['suspended'] += 1
+        if is_admin:
+            role_management_stats['administrators'] += 1
+        else:
+            role_management_stats['standard'] += 1
+            if (user.access_mode or 'read_write').strip().lower() == 'read_only':
+                role_management_stats['read_only'] += 1
+
+        # Administrators inherit operational module access.  Settings remains
+        # deliberately separate, so the summary reflects its real access rule.
+        if is_admin:
+            names = [permission_labels[field] for field in module_permission_fields]
+            if is_master or bool(getattr(user, 'can_access_settings', False)):
+                names.append(permission_labels['can_access_settings'])
+        else:
+            names = [
+                permission_labels[field]
+                for field in EDITABLE_USER_PERMISSION_FIELDS
+                if user_perm_values[user.id].get(field) and field in permission_labels
+            ]
+        user_permission_names[user.id] = names
+        user_permission_counts[user.id] = len(names)
+
     return render_template(
         'settings.html',
         users=users_all,
@@ -64,9 +118,12 @@ def settings():
         permission_groups=PERMISSION_GROUPS,
         permission_fields=EDITABLE_USER_PERMISSION_FIELDS,
         user_perm_values=user_perm_values,
+        user_permission_names=user_permission_names,
+        user_permission_counts=user_permission_counts,
+        role_management_stats=role_management_stats,
         default_permissions=default_permissions,
         is_master_admin=_is_master_admin(),
-        master_admin_username=(os.environ.get('DEFAULT_ADMIN_USER') or 'Admin').strip().lower(),
+        master_admin_username=master_admin_username,
     )
 
 
