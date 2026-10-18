@@ -1,5 +1,6 @@
 """client — split from ledgers.py."""
 from ._common import *  # noqa
+from app.services.permissions import _is_master_admin
 
 @bp.route('/client_ledger/<int:id>')
 @login_required
@@ -30,6 +31,9 @@ def client_ledger(id):
         materials = Material.query.order_by(Material.name.asc()).all()
 
         return render_template('ledger.html',
+                               # Only the master admin gets the permanent
+                               # delete action on this ledger (see template).
+                               is_master_admin=_is_master_admin(),
                                client=client,
                                entries=pagination.items,
                                pagination=pagination,

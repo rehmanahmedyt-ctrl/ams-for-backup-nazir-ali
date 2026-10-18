@@ -47,7 +47,7 @@ def register_hooks(app):
     from flask_login import current_user
     from models import Client, Material, DeliveryPerson, Settings
     from app.services.backup import _start_hourly_backup_worker, _start_reconcile_worker
-    from app.services.permissions import _user_can, _can_access_settings
+    from app.services.permissions import _user_can, _can_access_settings, _is_master_admin
     from app.services.constants import (
         _AUTO_BACKUP_ENABLED,
         BLUEPRINT_PERMISSION_PREFIXES,
@@ -369,7 +369,15 @@ def register_hooks(app):
                 delivery_persons=cache_obj.get('delivery_persons') or [],
                 settings=cache_obj.get('settings'),
                 user_can=_user_can,
+                # Master-admin-only controls (e.g. permanently deleting a
+                # client from their ledger) key off this flag. It is injected
+                # centrally so every page — clients list, client ledger,
+                # material ledger — agrees: only the built-in master Admin
+                # (see _is_master_admin) ever sees them; other admins and
+                # standard users get False and the markup is not rendered.
+                is_master_admin=_is_master_admin(),
                 ui_theme_preference=session.get('ui_theme')
             )
-        return dict(ui_theme_preference=session.get('ui_theme'))
+        return dict(is_master_admin=False,
+                    ui_theme_preference=session.get('ui_theme'))
 

@@ -73,6 +73,7 @@
     {% endif %}
     {% if is_driver %}<a class="btn btn-outline-info" href="{{ url_for('delivery_rents_page', driver=entity.name) }}"><i class="bi bi-truck me-1"></i>Delivery rents</a><button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#driverSettlementModal"><i class="bi bi-cash-stack me-1"></i>Pay driver</button>{% endif %}
     {% if opening_url %}<button class="btn btn-outline-info" data-bs-toggle="modal" data-bs-target="#openingBalanceModal"><i class="bi bi-wallet2 me-1"></i>Opening balance</button>{% endif %}
+    {% if is_client %}{% with c = entity %}{% include "_hard_delete_client_button.html" %}{% endwith %}{% endif %}
     <a class="btn btn-outline-light" href="{{ back_url }}">Back</a>
   </div>
 </div>
@@ -459,4 +460,5 @@ function openLedgerRowShift(kind, rowId, reference) {
 }
 </script>
 {% endif %}
+{% if is_client %}{% with c = entity %}{% include "_hard_delete_client_modal.html" %}{% endwith %}{% include "_hard_delete_client_script.html" %}{% endif %}
 {% endblock %}
