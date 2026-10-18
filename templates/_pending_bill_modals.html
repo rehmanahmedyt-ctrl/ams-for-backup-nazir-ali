@@ -69,7 +69,7 @@
 <div class="modal fade" id="editBillModal{{ bill.id }}" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <form action="/edit_pending_bill/{{ bill.id }}" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold">Edit Bill</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>

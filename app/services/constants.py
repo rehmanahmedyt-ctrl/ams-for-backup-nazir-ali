@@ -209,6 +209,12 @@ ENDPOINT_PERMISSION_MAP = {
     'add_client': 'can_manage_clients',
     'edit_client': 'can_manage_clients',
     'delete_client': 'can_manage_clients',
+    # The permanent purge is mapped like its siblings so that users without any
+    # client-management right are rejected by the global hook.  That is only the
+    # first gate: the route itself additionally requires _is_master_admin(), so
+    # a standard user who *does* hold can_manage_clients is still refused.
+    'hard_delete_client': 'can_manage_clients',
+    'hard_delete_client_preview': 'can_manage_clients',
     'transfer_client': 'can_manage_clients',
     'reclaim_client': 'can_manage_clients',
     'client_toggle_active': 'can_manage_clients',
