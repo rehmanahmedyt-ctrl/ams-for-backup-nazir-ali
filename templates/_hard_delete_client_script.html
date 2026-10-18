@@ -1,0 +1,105 @@
+{# Master-admin-only JS for the permanent client delete dialog (preview +
+   type-to-confirm gating). Included once per page that renders the dialog;
+   renders nothing for anyone else. #}
+{% if is_master_admin %}
+<script>
+/* --- master admin: permanent client delete -------------------------------
+   The preview is fetched when the dialog opens so the blast radius is visible
+   before anything is typed, and the submit button stays disabled until the
+   acknowledgement box is ticked AND the client name is retyped exactly.     */
+function hardDeletePreviewRows(d) {
+    const rows = [
+        ['Direct sales', d.sales],
+        ['Bookings', d.bookings],
+        ['Payments received / refunded', d.payments],
+        ['Material returns', d.material_returns],
+        ['Pending bills', d.pending_bills],
+        ['Waive-offs', d.waive_offs],
+        ['Invoices', d.invoices],
+        ['Stock ledger rows', d.stock_entries],
+        ['Dispatch deliveries', d.deliveries],
+        ['Driver payments', d.driver_payments],
+        ['Account (cash/bank) transactions reversed', d.account_transactions_reversed],
+        ['Linked financial accounts unlinked', d.linked_accounts],
+    ];
+    return rows.map(function (r) {
+        const n = Number(r[1] || 0);
+        const cls = n > 0 ? 'text-warning fw-bold' : 'text-white-50';
+        return '<div class="d-flex justify-content-between border-bottom border-secondary py-1">'
+             + '<span>' + r[0] + '</span><span class="' + cls + '">' + n + '</span></div>';
+    }).join('');
+}
+
+function loadHardDeletePreview(host) {
+    if (!host || host.dataset.previewLoaded === '1') return;
+    host.dataset.previewLoaded = '1';
+    fetch(host.dataset.previewUrl, {headers: {'Accept': 'application/json'}})
+        .then(function (r) { return r.json().then(function (b) { return {ok: r.ok, body: b}; }); })
+        .then(function (res) {
+            const d = res.body || {};
+            if (!res.ok) {
+                host.innerHTML = '<span class="text-danger">' + (d.error || 'Preview unavailable.') + '</span>';
+                return;
+            }
+            let html = hardDeletePreviewRows({
+                sales: d.sales, bookings: d.bookings, payments: d.payments,
+                material_returns: d.material_returns, pending_bills: d.pending_bills,
+                waive_offs: d.waive_offs, invoices: d.invoices, stock_entries: d.stock_entries,
+                deliveries: d.deliveries, driver_payments: d.driver_payments,
+                account_transactions_reversed: d.account_transactions,
+                linked_accounts: d.linked_accounts,
+            });
+            if (d.is_protected) {
+                html += '<div class="alert alert-warning small py-2 mt-2 mb-0">This is a shared system '
+                      + 'bucket (walk-in sales), not one customer. Permanent deletion is blocked — '
+                      + 'suspend it instead.</div>';
+            }
+            host.innerHTML = html;
+        })
+        .catch(function () {
+            host.innerHTML = '<span class="text-danger">Could not load the preview. '
+                           + 'Reload the page and try again.</span>';
+        });
+}
+
+function syncHardDeleteSubmit(clientId) {
+    const ack = document.querySelector('[data-hard-delete-ack="' + clientId + '"]');
+    const name = document.querySelector('[data-hard-delete-confirm="' + clientId + '"]');
+    const btn = document.querySelector('[data-hard-delete-submit="' + clientId + '"]');
+    if (!ack || !name || !btn) return;
+    const expected = (name.dataset.expectedName || '').trim().toLowerCase();
+    const typed = (name.value || '').trim().toLowerCase();
+    btn.disabled = !(ack.checked && expected && typed === expected);
+}
+
+document.addEventListener('show.bs.modal', function (event) {
+    const modal = event.target;
+    if (!modal || !modal.id || modal.id.indexOf('hardDeleteClientModal') !== 0) return;
+    const clientId = modal.id.replace('hardDeleteClientModal', '');
+    loadHardDeletePreview(document.getElementById('hardDeletePreview' + clientId));
+    syncHardDeleteSubmit(clientId);
+});
+
+document.addEventListener('input', function (event) {
+    const el = event.target.closest('[data-hard-delete-confirm]');
+    if (el) syncHardDeleteSubmit(el.dataset.hardDeleteConfirm);
+});
+
+document.addEventListener('change', function (event) {
+    const el = event.target.closest('[data-hard-delete-ack]');
+    if (el) syncHardDeleteSubmit(el.dataset.hardDeleteAck);
+});
+
+document.addEventListener('submit', function (event) {
+    const form = event.target.closest('[data-hard-delete-client-form]');
+    if (!form) return;
+    syncHardDeleteSubmit(form.dataset.hardDeleteClientForm);
+    const btn = form.querySelector('[data-hard-delete-submit]');
+    if (btn && btn.disabled) {
+        event.preventDefault();
+        return;
+    }
+    if (typeof window.showLoading === 'function') window.showLoading();
+});
+</script>
+{% endif %}

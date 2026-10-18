@@ -27,6 +27,7 @@
             </button>
             {% endif %}
         </form>
+        {% with c = client %}{% include "_hard_delete_client_button.html" %}{% endwith %}
         <button class="btn btn-outline-warning d-print-none btn-sm" data-bs-toggle="modal" data-bs-target="#cancelBookingModal">
             <i class="bi bi-x-octagon me-1"></i> Cancel Remaining Booking
         </button>
@@ -897,4 +898,6 @@ function submitCancelSelection{{ client.id }}() {
     }
 }
 </style>
+{% with c = client %}{% include "_hard_delete_client_modal.html" %}{% endwith %}
+{% include "_hard_delete_client_script.html" %}
 {% endblock %}

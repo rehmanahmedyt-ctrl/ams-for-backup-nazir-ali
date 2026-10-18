@@ -1,5 +1,6 @@
 """client — split from ledgers.py."""
 from ._common import *  # noqa
+from app.services.permissions import _is_master_admin
 
 @bp.route('/ledger/<int:client_id>')
 @login_required
@@ -669,6 +670,9 @@ def financial_ledger(client_id):
             transactions_map[f"DirectSale{s.id}"] = s
 
     return render_template('client_ledger.html',
+                           # Only the master admin gets the permanent delete
+                           # action on this ledger (see template).
+                           is_master_admin=_is_master_admin(),
                            client=client,
                            pending_bills=pending_bills,
                            financial_history=financial_history,

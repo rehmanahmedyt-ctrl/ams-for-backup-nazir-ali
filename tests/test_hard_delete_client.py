@@ -510,6 +510,43 @@ def test_master_admin_button_only_rendered_for_master_admin(app, client):
     assert "/delete_client/" in other_html
 
 
+def test_master_admin_button_on_client_ledger_pages_only_for_master(app, client):
+    """The same permanent-delete action must be reachable from a client's
+    ledger (financial + material), not just the clients list — and must not
+    be rendered at all for any other admin or user."""
+    login(client)
+    c1_id = seed_client(client, app, name="C1", code="CL-1")
+    make_second_admin(app, client, username="manager2")
+
+    for url in (f"/ledger/{c1_id}", f"/client_ledger/{c1_id}"):
+        master_html = client.get(url).get_data(as_text=True)
+        assert "Delete Client Permanently" in master_html, url
+        assert 'id="hardDeleteClientModal' in master_html, url
+        assert "hard_delete_client/" in master_html, url
+        assert "hardDeletePreviewRows" in master_html, url
+
+        other = make_csrf_client(app)
+        login(other, "manager2", OTHER_PASSWORD)
+        other_html = other.get(url).get_data(as_text=True)
+        assert "Delete Client Permanently" not in other_html, url
+        assert 'id="hardDeleteClientModal' not in other_html, url
+        assert "hard_delete_client/" not in other_html, url
+        assert "hardDeletePreviewRows" not in other_html, url
+
+
+def test_master_admin_can_delete_client_from_ledger(app, client):
+    """Submitting the ledger dialog (same route) purges the client."""
+    login(client)
+    c1_id = seed_client(client, app, name="C1", code="CL-1")
+    assert "Delete Client Permanently" in client.get(f"/ledger/{c1_id}").get_data(as_text=True)
+
+    resp = client.post(f"/hard_delete_client/{c1_id}",
+                       data={"confirm_name": "C1"}, follow_redirects=True)
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.get(Client, c1_id) is None
+
+
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------

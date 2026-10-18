@@ -1,0 +1,10 @@
+{# Master-admin-only trigger for the permanent client delete dialog.
+   Expects `c` (a Client) and `is_master_admin`. Renders nothing at all for
+   anyone else — other admins and standard users never see this action. #}
+{% if is_master_admin %}
+<button type="button" class="btn btn-danger btn-sm d-print-none fw-bold"
+        data-bs-toggle="modal" data-bs-target="#hardDeleteClientModal{{ c.id }}"
+        title="Master admin only: permanently delete this client and cleanly reverse every transaction">
+    <i class="bi bi-trash3-fill me-1"></i> Delete Client Permanently
+</button>
+{% endif %}

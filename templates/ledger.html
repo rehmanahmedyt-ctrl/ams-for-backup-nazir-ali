@@ -26,6 +26,7 @@
         <a href="{{ url_for('download_client_ledger', id=client.id, action='print') }}" class="btn btn-outline-primary btn-sm">
             <i class="bi bi-printer me-1"></i> Print
         </a>
+        {% with c = client %}{% include "_hard_delete_client_button.html" %}{% endwith %}
     </div>
 </div>
 
@@ -164,6 +165,9 @@
     </ul>
 </nav>
 {% endif %}
+
+{% with c = client %}{% include "_hard_delete_client_modal.html" %}{% endwith %}
+{% include "_hard_delete_client_script.html" %}
 
 {% else %}
 {# ------------------------------------------------------------------

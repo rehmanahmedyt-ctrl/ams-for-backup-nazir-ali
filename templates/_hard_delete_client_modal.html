@@ -1,0 +1,64 @@
+{# Master-admin-only permanent client delete dialog. Expects `c` (a Client) and
+   `is_master_admin`. Renders nothing at all for anyone else, so neither the
+   dialog, the route URL, nor its copy is shipped to other admins/users. #}
+{% if is_master_admin %}
+<!-- Master-admin-only: permanently delete a client and cleanly reverse everything -->
+<div class="modal fade" id="hardDeleteClientModal{{ c.id }}" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content bg-dark text-white border-danger shadow-lg">
+            <div class="modal-header border-danger">
+                <h5 class="modal-title text-danger fw-bold">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>Permanently Delete: {{ c.name }}
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('hard_delete_client', id=c.id) }}" method="POST"
+                  data-hard-delete-client-form="{{ c.id }}">
+                <div class="modal-body">
+                    <div class="alert alert-danger small py-2 mb-3">
+                        <strong>Master admin power — irreversible.</strong>
+                        This is not a suspension. The client and every transaction made for them are
+                        deleted and cleanly reversed: sales, bookings, payments, material returns,
+                        pending bills, waive-offs, invoices, stock rows and deliveries. Cash/bank
+                        balances are reversed, FIFO lots and booked quantities are released and stock
+                        is recomputed. No voided rows or orphans are left behind, and the name becomes
+                        free to add again from scratch.
+                    </div>
+
+                    <div class="card bg-secondary bg-opacity-25 border-secondary p-3 mb-3">
+                        <h6 class="text-warning fw-bold mb-2"><i class="bi bi-clipboard-data me-1"></i> What will be removed</h6>
+                        <div id="hardDeletePreview{{ c.id }}" class="small text-white-50"
+                             data-preview-url="{{ url_for('hard_delete_client_preview', id=c.id) }}">
+                            Loading preview…
+                        </div>
+                    </div>
+
+                    <div class="form-check small mb-3">
+                        <input class="form-check-input" type="checkbox" id="hardDeleteAck{{ c.id }}"
+                               data-hard-delete-ack="{{ c.id }}" required>
+                        <label class="form-check-label text-white-50" for="hardDeleteAck{{ c.id }}">
+                            I understand this permanently deletes <strong>{{ c.name }}</strong> and reverses
+                            all of their transactions. This cannot be undone.
+                        </label>
+                    </div>
+
+                    <label class="form-label small text-white-50 mb-1" for="hardDeleteConfirm{{ c.id }}">
+                        Type the client name exactly to confirm: <strong class="text-white">{{ c.name }}</strong>
+                    </label>
+                    <input type="text" class="form-control form-control-sm bg-dark text-white border-danger mb-2"
+                           id="hardDeleteConfirm{{ c.id }}" name="confirm_name"
+                           data-hard-delete-confirm="{{ c.id }}"
+                           data-expected-name="{{ c.name }}" autocomplete="off" required>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger btn-sm fw-bold"
+                            data-hard-delete-submit="{{ c.id }}" disabled>
+                        <i class="bi bi-trash3-fill me-1"></i> Permanently Delete &amp; Reverse
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
