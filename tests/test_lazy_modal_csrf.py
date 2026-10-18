@@ -183,6 +183,42 @@ def test_dedicated_opening_balance_route_succeeds(app_factory, tmp_path):
         assert row.opening_balance_date.strftime("%Y-%m-%d") == "2026-06-01"
 
 
+def test_client_ledger_opening_balance_form_embeds_csrf_token(app_factory, tmp_path):
+    """The ledger's own modal must work even if page JavaScript is unavailable.
+
+    The global layout injector is a useful fallback, but the opening-balance
+    form is a financial mutation and must carry its token in the HTML it posts.
+    Previously this form relied only on DOMContentLoaded JavaScript, so a
+    blocked or stale script made the visible "Update Opening Balance" button
+    fail with the server's 400 CSRF response.
+    """
+    app = _csrf_enforced_app(app_factory, tmp_path)
+    raw, token = _raw_login(app)
+    client_id = _seed_client(app, name="Ledger Opening Balance Client")
+
+    page = raw.get(f"/ledger/{client_id}")
+    assert page.status_code == 200
+    forms = _forms(page.get_data(as_text=True))
+    opening_forms = [
+        fields for method, fields, chunk in forms
+        if method == "POST" and f"/client_opening_balance/{client_id}" in chunk
+    ]
+    assert len(opening_forms) == 1, "client ledger did not render its opening-balance form"
+    assert opening_forms[0].get("_csrf_token") == token
+
+    resp = raw.post(f"/client_opening_balance/{client_id}", data={
+        "opening_balance": "88000",
+        "opening_balance_date": "2026-07-07",
+        "_csrf_token": opening_forms[0]["_csrf_token"],
+    })
+    assert resp.status_code in (302, 303), resp.get_data(as_text=True)[:300]
+
+    with app.app_context():
+        row = db.session.get(Client, client_id)
+        assert row.opening_balance == pytest.approx(88000.0)
+        assert row.opening_balance_date.strftime("%Y-%m-%d") == "2026-07-07"
+
+
 # ---------------------------------------------------------------------------
 # The other lazy partials share the same defect class
 # ---------------------------------------------------------------------------
