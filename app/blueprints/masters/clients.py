@@ -102,7 +102,11 @@ def clients():
                            total_payable_visible=total_payable_visible,
                            total_advance_visible=total_advance_visible,
                            total_billed_visible=total_billed_visible,
-                           total_received_visible=total_received_visible)
+                           total_received_visible=total_received_visible,
+                           # Only the built-in master Admin sees the permanent
+                           # "delete cleanly" power; every other user keeps the
+                           # non-destructive suspend action alone.
+                           is_master_admin=_is_master_admin())
 
 
 @bp.route('/clients/<int:client_id>/modals')

@@ -836,6 +836,520 @@ def hard_delete_supplier(supplier_id_or_obj, *, actor=None):
     }
 
 
+# --- client purge (master-admin-only "special power") ---
+
+# Client rows that are shared *system buckets* rather than one real customer.
+# They aggregate unrelated walk-in sales and the schema bootstrap re-creates
+# them on startup, so purging one destroys data belonging to no single customer
+# and the row immediately comes back.  Refused unless explicitly overridden.
+PROTECTED_CLIENT_CODES = frozenset(c.strip().lower() for c in (OPEN_KHATA_CODE,) if c and c.strip())
+
+
+def _resolve_client(obj_or_id):
+    """Accept a ``Client`` row or a client id and return the row (or ``None``)."""
+    if isinstance(obj_or_id, Client):
+        return obj_or_id
+    try:
+        return db.session.get(Client, int(obj_or_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _purge_account_transactions(pairs):
+    """Reverse and delete every AccountTransaction belonging to *pairs*.
+
+    ``pairs`` is an iterable of ``(source_type, source_id)``.  Rows are matched
+    both by the ``[SRC:Kind:id]`` note marker written by the accounting sync and
+    by the explicit ``source_type`` / ``source_id`` columns, because legacy rows
+    may carry only one of the two.
+
+    The money effect is reversed first, so a cash/bank account returns to the
+    balance it held before this client posted to it.  Any manual cash-flow row
+    pointing at the transaction is then unlinked (rather than allowed to break
+    the foreign key) and the transaction row itself is deleted — the database
+    keeps no voided transaction corpses.
+
+    Callers normally void the source document first, which already reverses and
+    flags the transaction; the ``is_void`` guard here makes that safe instead of
+    double-reversing.
+    """
+    normalized = []
+    for kind, sid in pairs:
+        if sid is None:
+            continue
+        normalized.append((str(kind), int(sid)))
+    if not normalized:
+        return 0
+
+    tx_ids = set()
+    for kind, sid in normalized:
+        marker = f'[SRC:{kind}:{sid}]'
+        rows = AccountTransaction.query.filter(
+            or_(
+                AccountTransaction.note.ilike(f'%{marker}%'),
+                and_(
+                    AccountTransaction.source_type == kind,
+                    AccountTransaction.source_id == sid,
+                ),
+            )
+        ).all()
+        tx_ids.update(tx.id for tx in rows)
+
+    if not tx_ids:
+        return 0
+
+    for tx in db.session.query(AccountTransaction).filter(AccountTransaction.id.in_(tx_ids)).all():
+        if not tx.is_void:
+            _reverse_account_tx_effect(tx)
+
+    CashFlowEntry.query.filter(
+        CashFlowEntry.account_tx_id.in_(tx_ids)
+    ).update({'account_tx_id': None}, synchronize_session=False)
+    AccountTransaction.query.filter(
+        AccountTransaction.id.in_(tx_ids)
+    ).delete(synchronize_session=False)
+    return len(tx_ids)
+
+
+def _purge_void_direct_sale(sale):
+    """Void one sale's accounting/derived effects without a per-sale stock rebuild.
+
+    Mirrors ``_set_direct_sale_void_state`` exactly, except that the expensive
+    material-total rebuild is deferred: the caller deletes every stock row owned
+    by the purged client and recomputes totals once at the end.
+    """
+    if not sale or sale.is_void:
+        return False
+
+    old_refs = _direct_sale_bill_refs(sale)
+    old_client_code, old_client_name = _direct_sale_client_identity(sale)
+    sale.is_void = True
+    _void_sale_booking_allocations(sale, True)
+    _void_sale_grn_allocations(sale, True)
+    rebuild_direct_sale_effects(
+        sale,
+        old_refs=old_refs,
+        old_client_code=old_client_code,
+        old_client_name=old_client_name,
+        rebuild_stock=False,
+    )
+    DeliveryRent.query.filter_by(sale_id=sale.id).update({'is_void': True}, synchronize_session=False)
+    SaleDeliveryPerson.query.filter_by(sale_id=sale.id).update({'is_void': True}, synchronize_session=False)
+    return True
+
+
+def client_purge_preview(client_id_or_obj):
+    """Count what :func:`hard_delete_client` would remove, without changing anything.
+
+    Used by the confirmation dialog so the master admin can see the blast radius
+    before typing the client's name.
+    """
+    client = _resolve_client(client_id_or_obj)
+    if not client:
+        return None
+
+    if not _client_has_identity(client):
+        return None
+
+    def _count(model, code_col=None, name_col=None, id_col=None):
+        c = _client_match_clauses(client, model, code_col, name_col, id_col)
+        return model.query.filter(or_(*c)).count() if c else 0
+
+    sales = _count(DirectSale, code_col='client_code', name_col='client_name')
+    sale_clauses = _client_match_clauses(client, DirectSale, 'client_code', 'client_name')
+    sale_ids = [r[0] for r in db.session.query(DirectSale.id).filter(or_(*sale_clauses)).all()] if sale_clauses else []
+    driver_payments = 0
+    if sale_ids:
+        driver_payments = DeliveryPersonPayment.query.filter(
+            DeliveryPersonPayment.sale_id.in_(sale_ids)).count()
+
+    return {
+        'client_id': client.id,
+        'client_name': client.name,
+        'client_code': client.code,
+        'is_protected': _is_protected_client(client),
+        'sales': sales,
+        'bookings': _count(Booking, name_col='client_name'),
+        'payments': _count(Payment, name_col='client_name', id_col='client_id'),
+        'material_returns': _count(MaterialReturn, name_col='client_name'),
+        'pending_bills': _count(PendingBill, code_col='client_code', name_col='client_name'),
+        'waive_offs': _count(WaiveOff, code_col='client_code', name_col='client_name'),
+        'invoices': _count(Invoice, code_col='client_code', name_col='client_name'),
+        'stock_entries': _count(Entry, code_col='client_code', name_col='client'),
+        'deliveries': _count(Delivery, name_col='client_name'),
+        'driver_payments': driver_payments,
+        'linked_accounts': Account.query.filter_by(linked_client_id=client.id).count(),
+    }
+
+
+def _is_protected_client(client):
+    return bool(client) and (client.code or '').strip().lower() in PROTECTED_CLIENT_CODES
+
+
+def _client_match_clauses(client, model, code_col=None, name_col=None, id_col=None):
+    """SQL clauses matching every row of *model* that belongs to *client*.
+
+    Most of this schema stores the client as **text** (``client_name`` /
+    ``client_code``) rather than as a foreign key, and legacy rows predate the
+    ``client_id`` backfill.  A clean purge therefore has to match on all three
+    identities, or it silently leaves rows behind.  An identity that is empty is
+    skipped — matching ``client_code == ''`` would otherwise sweep in unrelated
+    rows that simply never had a code.
+    """
+    norm_code = (getattr(client, 'code', '') or '').strip().lower()
+    norm_name = (getattr(client, 'name', '') or '').strip().lower()
+
+    clauses = []
+    if id_col is not None:
+        clauses.append(getattr(model, id_col) == client.id)
+    if code_col is not None and norm_code:
+        clauses.append(func.lower(func.trim(getattr(model, code_col))) == norm_code)
+    if name_col is not None and norm_name:
+        clauses.append(func.lower(func.trim(getattr(model, name_col))) == norm_name)
+    return clauses
+
+
+def _client_has_identity(client):
+    """True when the client carries a code or name we can safely match rows on."""
+    return bool((getattr(client, 'code', '') or '').strip()
+                or (getattr(client, 'name', '') or '').strip())
+
+
+def hard_delete_client(client_id_or_obj, *, actor=None, allow_protected=False):
+    """Permanently delete a client and cleanly reverse every transaction made for them.
+
+    This is the client-side counterpart of :func:`hard_delete_supplier` and
+    follows the same house policy documented on :func:`hard_delete_payment`:
+    **the database holds no voided rows**.  Each source document is pushed
+    through the proven reversal helpers — so the money leaves the cash/bank
+    accounts it was posted to, FIFO GRN lots and booked quantities are released,
+    pending bills and waive-offs disappear — and then the rows themselves are
+    deleted.  Nothing is left behind for a ledger, report or reconciliation to
+    pick up, and the client's name/code becomes free to re-add from scratch.
+
+    The audit trail is deliberately *not* erased — "no tracing behind" applies to
+    the business data, not to the record of who removed it.  A structured event
+    (with a before-snapshot) is appended to ``accounting_audit_log`` inside this
+    transaction, and the caller writes the free-text ``audit_log`` entry once it
+    has committed.  That is where an audit trail belongs, rather than in a
+    flagged transaction row.
+
+    Raises ``ValueError`` if the client does not exist, has no usable identity,
+    or is a protected system bucket (see ``PROTECTED_CLIENT_CODES``) and
+    ``allow_protected`` was not passed.
+
+    The caller owns the transaction: this flushes but does not commit.
+    """
+    client = _resolve_client(client_id_or_obj)
+    if not client:
+        raise ValueError('Client not found.')
+
+    client_pk = client.id
+    client_code = (client.code or '').strip()
+    client_name = (client.name or '').strip()
+
+    if _is_protected_client(client) and not allow_protected:
+        raise ValueError(
+            f"Cannot permanently delete '{client_name}': it is the shared "
+            f"{client_code} system bucket used for unregistered walk-in sales, "
+            f"not a single customer. Purging it would destroy unrelated sales "
+            f"and the system re-creates it on startup. Suspend it instead."
+        )
+
+    def _rows(model, code_col=None, name_col=None, id_col=None):
+        clauses = _client_match_clauses(client, model, code_col, name_col, id_col)
+        return model.query.filter(or_(*clauses)).all() if clauses else []
+
+    if not _client_has_identity(client):
+        raise ValueError('Client has no usable code or name; refusing to purge.')
+
+    # --- 1. collect every document owned by this client -------------------
+    # The Client row must outlive this whole pass: the reversal helpers resolve
+    # the client by name/code while they rebuild ledgers and pending bills.
+    # Waive-offs and stock rows are *not* pre-loaded: both are swept by client
+    # identity in their own phase below, after the documents that also own some
+    # of those rows have been reversed.
+    sales = _rows(DirectSale, code_col='client_code', name_col='client_name')
+    bookings = _rows(Booking, name_col='client_name')
+    payments = _rows(Payment, name_col='client_name', id_col='client_id')
+    returns = _rows(MaterialReturn, name_col='client_name')
+    pending_bills = _rows(PendingBill, code_col='client_code', name_col='client_name')
+    invoices = _rows(Invoice, code_col='client_code', name_col='client_name')
+    deliveries = _rows(Delivery, name_col='client_name')
+    drafts = _rows(DirectSaleDraft, code_col='client_code', name_col='client_name')
+
+    sale_ids = [s.id for s in sales if s.id]
+    tx_pairs = []
+    # Rows removed by the sweeps below are counted as they go, because the same
+    # table is cleaned from several directions (a waive-off can belong to the
+    # client *and* to a purged payment) and the audit snapshot must not
+    # double-count or under-report.
+    removed = {'stock_entries': 0, 'waive_offs': 0}
+
+    # --- 2. driver payments hang off this client's sales -------------------
+    # Removed first: they carry foreign keys to both the sale and its
+    # delivery-person allocation, and both are deleted below.
+    driver_payments = []
+    if sale_ids:
+        alloc_ids = [r[0] for r in db.session.query(SaleDeliveryPerson.id).filter(
+            SaleDeliveryPerson.sale_id.in_(sale_ids)).all()]
+        dp_clauses = [DeliveryPersonPayment.sale_id.in_(sale_ids)]
+        if alloc_ids:
+            dp_clauses.append(DeliveryPersonPayment.allocation_id.in_(alloc_ids))
+        driver_payments = DeliveryPersonPayment.query.filter(or_(*dp_clauses)).all()
+    driver_payment_ids = [dp.id for dp in driver_payments if dp.id]
+    tx_pairs.extend(('DeliveryPersonPayment', dp_id) for dp_id in driver_payment_ids)
+    if driver_payment_ids:
+        DeliveryPersonPayment.query.filter(
+            DeliveryPersonPayment.id.in_(driver_payment_ids)
+        ).delete(synchronize_session=False)
+
+    # --- 3. direct sales ---------------------------------------------------
+    for sale in sales:
+        _purge_void_direct_sale(sale)
+        removed['stock_entries'] += Entry.query.filter(
+            Entry.source_table == 'direct_sale', Entry.source_id == sale.id
+        ).delete(synchronize_session=False)
+        DeliveryRent.query.filter_by(sale_id=sale.id).delete(synchronize_session=False)
+        SaleDeliveryPerson.query.filter_by(sale_id=sale.id).delete(synchronize_session=False)
+        BookingAllocation.query.filter_by(sale_id=sale.id).delete(synchronize_session=False)
+        _delete_sale_grn_allocations(sale)
+        PendingBill.query.filter(
+            PendingBill.source_table == 'direct_sale', PendingBill.source_id == sale.id
+        ).delete(synchronize_session=False)
+        tx_pairs.append(('DirectSale', sale.id))
+        db.session.delete(sale)
+    db.session.flush()
+
+    purged_payment_ids = set()
+
+    def _purge_payment(pay):
+        """Reverse one receipt/refund and delete it (mirrors ``hard_delete_payment``)."""
+        if not pay or pay.id is None or pay.id in purged_payment_ids:
+            return 0
+        purged_payment_ids.add(pay.id)
+        tx_pairs.append(('Payment', pay.id))
+        _set_payment_void_state(pay, True)
+        removed['waive_offs'] += WaiveOff.query.filter_by(
+            payment_id=pay.id).delete(synchronize_session=False)
+        try:
+            for pb in _payment_generated_pending_bills(pay):
+                db.session.delete(pb)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                'Could not remove the pending bill(s) of payment %s', pay.id)
+        # A material return created from this payment loses the dangling link
+        # (payment_id is nullable) instead of blocking the delete.
+        for ret in MaterialReturn.query.filter_by(payment_id=pay.id).all():
+            ret.payment_id = None
+        db.session.delete(pay)
+        return 1
+
+    # --- 4. material returns (and the receipt payment each one created) ----
+    # MaterialReturnItem rows go with the parent through the ORM cascade, so they
+    # are never bulk-deleted here — doing both would leave SQLAlchemy issuing a
+    # DELETE for rows that are already gone.
+    for ret in returns:
+        linked_payment_id = ret.payment_id
+        _set_material_return_void_state(ret, True)
+        refs = _material_return_bill_refs(ret)
+        if refs:
+            removed['stock_entries'] += Entry.query.filter(
+                Entry.bill_no.in_(refs), Entry.nimbus_no == 'Material Return'
+            ).delete(synchronize_session=False)
+        ret.payment_id = None
+        db.session.delete(ret)
+        if linked_payment_id:
+            _purge_payment(db.session.get(Payment, linked_payment_id))
+
+    # --- 5. bookings (and the advance payment each one created) ------------
+    for booking in bookings:
+        refs = _booking_bill_refs(booking)
+        _set_booking_void_state(booking, True)
+        tx_pairs.append(('Booking', booking.id))
+        marker = f'[SRC:Booking:{booking.id}]'
+        for pay in Payment.query.filter(Payment.note.ilike(f'%{marker}%')).all():
+            _purge_payment(pay)
+        booking_item_ids = [r[0] for r in db.session.query(BookingItem.id).filter(
+            BookingItem.booking_id == booking.id).all()]
+        if booking_item_ids:
+            # Allocations must go before their booking items: the items themselves
+            # are removed by the ORM cascade on the parent booking.
+            BookingAllocation.query.filter(
+                BookingAllocation.booking_item_id.in_(booking_item_ids)
+            ).delete(synchronize_session=False)
+        PendingBill.query.filter(
+            PendingBill.source_table == 'booking', PendingBill.source_id == booking.id
+        ).delete(synchronize_session=False)
+        # Cancel rows only exist because of this booking — remove, don't flag.
+        if refs:
+            removed['stock_entries'] += Entry.query.filter(
+                Entry.type == 'CANCEL', Entry.bill_no.in_(refs)
+            ).delete(synchronize_session=False)
+        db.session.delete(booking)
+
+    # --- 6. remaining standalone payments ---------------------------------
+    for pay in payments:
+        _purge_payment(pay)
+
+    # --- 7. remaining waive-offs ------------------------------------------
+    # Swept by identity with a bulk DELETE rather than through the ORM objects
+    # collected above: a waive-off attached to a purged payment has already been
+    # removed, and re-deleting it through the ORM would target a row that is gone.
+    waive_clauses = _client_match_clauses(client, WaiveOff, 'client_code', 'client_name')
+    if waive_clauses:
+        removed['waive_offs'] += WaiveOff.query.filter(
+            or_(*waive_clauses)).delete(synchronize_session=False)
+
+    # --- 8. remaining pending bills (follow-ups first: FK on reminder_id) --
+    pending_ids = [pb.id for pb in pending_bills if pb.id is not None]
+    if pending_ids:
+        FollowUpContact.query.filter(
+            FollowUpContact.pending_bill_id.in_(pending_ids)
+        ).delete(synchronize_session=False)
+        FollowUpReminder.query.filter(
+            FollowUpReminder.pending_bill_id.in_(pending_ids)
+        ).delete(synchronize_session=False)
+        PendingBill.query.filter(
+            PendingBill.id.in_(pending_ids)
+        ).delete(synchronize_session=False)
+    # Any pending bill the reversal steps re-created for this client is swept up
+    # by identity so nothing is left behind.
+    leftover_pb = _client_match_clauses(client, PendingBill, 'client_code', 'client_name')
+    if leftover_pb:
+        leftover_ids = [r[0] for r in db.session.query(PendingBill.id).filter(or_(*leftover_pb)).all()]
+        if leftover_ids:
+            FollowUpContact.query.filter(
+                FollowUpContact.pending_bill_id.in_(leftover_ids)).delete(synchronize_session=False)
+            FollowUpReminder.query.filter(
+                FollowUpReminder.pending_bill_id.in_(leftover_ids)).delete(synchronize_session=False)
+            PendingBill.query.filter(
+                PendingBill.id.in_(leftover_ids)).delete(synchronize_session=False)
+
+    # --- 9. stock ledger rows ---------------------------------------------
+    # Everything still attributed to this client by code or name, including legacy
+    # rows with no ``source_table`` stamp.  Material totals are recomputed from
+    # the surviving rows at the end, so the deleted quantities reverse themselves
+    # without any incremental bookkeeping.
+    entry_clauses = _client_match_clauses(client, Entry, 'client_code', 'client')
+    if entry_clauses:
+        removed['stock_entries'] += Entry.query.filter(
+            or_(*entry_clauses)).delete(synchronize_session=False)
+
+    # --- 10. invoices ------------------------------------------------------
+    # Only remove an invoice that no surviving document still points at.  By now
+    # this client's own sales and stock rows are gone, so anything still
+    # referencing the invoice belongs to somebody else — a legacy database can
+    # share one.  Such an invoice is deliberately left intact rather than
+    # breaking the foreign key or silently rewriting another client's rows.
+    invoices_deleted = 0
+    for inv in invoices:
+        if inv.id is None:
+            continue
+        if DirectSale.query.filter(DirectSale.invoice_id == inv.id).count():
+            continue
+        if Entry.query.filter(Entry.invoice_id == inv.id).count():
+            continue
+        db.session.delete(inv)
+        invoices_deleted += 1
+
+    # --- 11. dispatch deliveries and sale drafts ---------------------------
+    for delivery in deliveries:
+        if delivery.id is not None:
+            db.session.delete(delivery)
+    for draft in drafts:
+        if draft.id is not None:
+            db.session.delete(draft)
+    db.session.flush()
+
+    # --- 12. money: reverse and delete the account transactions -----------
+    tx_deleted = _purge_account_transactions(tx_pairs)
+
+    # --- 13. recompute stock from the surviving ledger --------------------
+    _rebuild_material_totals()
+
+    # --- 14. release references held by rows that stay --------------------
+    Account.query.filter_by(linked_client_id=client_pk).update({
+        'linked_client_id': None,
+        'linked_party_name': None,
+    }, synchronize_session=False)
+    # Other clients transferred *into* this one would otherwise dangle.
+    Client.query.filter_by(transferred_to_id=client_pk).update(
+        {'transferred_to_id': None}, synchronize_session=False)
+
+    # --- 15. snapshot, then delete the client itself ----------------------
+    before = {
+        'id': client_pk,
+        'code': client_code,
+        'name': client_name,
+        'phone': client.phone,
+        'opening_balance': client.opening_balance,
+        'sales_deleted': len(sales),
+        'bookings_deleted': len(bookings),
+        'payments_deleted': len(purged_payment_ids),
+        'returns_deleted': len(returns),
+        'pending_bills_deleted': len(pending_ids),
+        'waive_offs_deleted': removed['waive_offs'],
+        'invoices_deleted': invoices_deleted,
+        'stock_entries_deleted': removed['stock_entries'],
+        'deliveries_deleted': len(deliveries),
+        'account_transactions_deleted': tx_deleted,
+    }
+    db.session.delete(client)
+    db.session.flush()
+
+    # --- 16. audit trail (append-only, intentionally kept) ----------------
+    # ``record_accounting_audit`` appends to *this* transaction, so the purge and
+    # its structured audit event commit or roll back together.
+    #
+    # The free-text ``audit_log`` entry is deliberately NOT written here.  That
+    # helper commits through its own SQLite connection, which cannot acquire the
+    # write lock while this transaction still holds it — the row would be
+    # silently dropped.  The caller writes it right after committing, using the
+    # ``audit_summary`` returned below.
+    from utils.accounting_audit import record_accounting_audit
+    act = actor if actor is not None else current_user
+    summary = (
+        f"{before['sales_deleted']} sale(s), {before['bookings_deleted']} booking(s), "
+        f"{before['payments_deleted']} payment(s), {before['returns_deleted']} return(s), "
+        f"{before['pending_bills_deleted']} pending bill(s), {before['waive_offs_deleted']} waive-off(s), "
+        f"{before['invoices_deleted']} invoice(s), {before['stock_entries_deleted']} stock row(s), "
+        f"{before['deliveries_deleted']} delivery(s), {before['account_transactions_deleted']} account tx(s)"
+    )
+    record_accounting_audit(
+        act,
+        action='HardDelete',
+        entity_type='Client',
+        entity_id=client_pk,
+        before=before,
+        after=None,
+        party_before_id=client_pk,
+        reason='Client and every associated transaction permanently removed and reversed.',
+        module='clients',
+    )
+
+    return {
+        'client_id': client_pk,
+        'client_name': client_name,
+        'client_code': client_code,
+        'sales_deleted': before['sales_deleted'],
+        'bookings_deleted': before['bookings_deleted'],
+        'payments_deleted': before['payments_deleted'],
+        'returns_deleted': before['returns_deleted'],
+        'pending_bills_deleted': before['pending_bills_deleted'],
+        'waive_offs_deleted': before['waive_offs_deleted'],
+        'invoices_deleted': before['invoices_deleted'],
+        'stock_entries_deleted': before['stock_entries_deleted'],
+        'deliveries_deleted': before['deliveries_deleted'],
+        'driver_payments_deleted': len(driver_payment_ids),
+        'account_transactions_deleted': tx_deleted,
+        'audit_summary': (
+            f"Hard deleted client '{client_name}' (#{client_pk}, code={client_code}) "
+            f"and reversed all their transactions: {summary}."
+        ),
+    }
+
+
 def _resolve_supplier(obj_or_id):
     if isinstance(obj_or_id, Supplier):
         return obj_or_id

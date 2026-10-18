@@ -216,8 +216,15 @@ function addPageInput(containerId, value = '') {
                                 <button class="btn btn-outline-warning border-2" data-client-modal-url="{{ url_for('client_modals', client_id=c.id) }}" data-client-modal="edit" title="Edit"><i class="bi bi-pencil"></i></button>
                                 <button class="btn btn-outline-light border-2" data-client-modal-url="{{ url_for('client_modals', client_id=c.id) }}" data-client-modal="transfer" title="Transfer Data"><i class="bi bi-arrow-right-circle"></i></button>
                                 <form action="/delete_client/{{ c.id }}" method="POST" class="d-inline" onsubmit="return confirm('Suspend client {{ c.name }}?')">
-                                    <button type="submit" class="btn btn-outline-danger border-2 rounded-end-pill" title="Suspend"><i class="bi bi-pause-circle"></i></button>
+                                    <button type="submit" class="btn btn-outline-danger border-2 {% if not is_master_admin %}rounded-end-pill{% endif %}" title="Suspend"><i class="bi bi-pause-circle"></i></button>
                                 </form>
+                                {% if is_master_admin %}
+                                <button type="button" class="btn btn-outline-danger border-2 rounded-end-pill"
+                                        data-bs-toggle="modal" data-bs-target="#hardDeleteClientModal{{ c.id }}"
+                                        title="Master admin only: permanently delete this client and cleanly reverse every transaction">
+                                    <i class="bi bi-trash3-fill"></i>
+                                </button>
+                                {% endif %}
                             </div>
                         </td>
                     </tr>
@@ -311,6 +318,13 @@ function addPageInput(containerId, value = '') {
                                     <i class="bi bi-play-circle"></i>
                                 </button>
                             </form>
+                            {% if is_master_admin %}
+                            <button type="button" class="btn btn-outline-danger btn-sm border-2 rounded-pill shadow-sm ms-1"
+                                    data-bs-toggle="modal" data-bs-target="#hardDeleteClientModal{{ c.id }}"
+                                    title="Master admin only: permanently delete this client and cleanly reverse every transaction">
+                                <i class="bi bi-trash3-fill"></i>
+                            </button>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -414,6 +428,71 @@ function addPageInput(containerId, value = '') {
     <option value="{{ cat }}"></option>
     {% endfor %}
 </datalist>
+
+{% if is_master_admin %}
+<!-- Master-admin-only: permanently delete a client and cleanly reverse everything -->
+{% for c in (active_pagination.items + inactive_pagination.items) %}
+<div class="modal fade" id="hardDeleteClientModal{{ c.id }}" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content bg-dark text-white border-danger shadow-lg">
+            <div class="modal-header border-danger">
+                <h5 class="modal-title text-danger fw-bold">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>Permanently Delete: {{ c.name }}
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('hard_delete_client', id=c.id) }}" method="POST"
+                  data-hard-delete-client-form="{{ c.id }}">
+                <div class="modal-body">
+                    <div class="alert alert-danger small py-2 mb-3">
+                        <strong>Master admin power — irreversible.</strong>
+                        This is not a suspension. The client and every transaction made for them are
+                        deleted and cleanly reversed: sales, bookings, payments, material returns,
+                        pending bills, waive-offs, invoices, stock rows and deliveries. Cash/bank
+                        balances are reversed, FIFO lots and booked quantities are released and stock
+                        is recomputed. No voided rows or orphans are left behind, and the name becomes
+                        free to add again from scratch.
+                    </div>
+
+                    <div class="card bg-secondary bg-opacity-25 border-secondary p-3 mb-3">
+                        <h6 class="text-warning fw-bold mb-2"><i class="bi bi-clipboard-data me-1"></i> What will be removed</h6>
+                        <div id="hardDeletePreview{{ c.id }}" class="small text-white-50"
+                             data-preview-url="{{ url_for('hard_delete_client_preview', id=c.id) }}">
+                            Loading preview…
+                        </div>
+                    </div>
+
+                    <div class="form-check small mb-3">
+                        <input class="form-check-input" type="checkbox" id="hardDeleteAck{{ c.id }}"
+                               data-hard-delete-ack="{{ c.id }}" required>
+                        <label class="form-check-label text-white-50" for="hardDeleteAck{{ c.id }}">
+                            I understand this permanently deletes <strong>{{ c.name }}</strong> and reverses
+                            all of their transactions. This cannot be undone.
+                        </label>
+                    </div>
+
+                    <label class="form-label small text-white-50 mb-1" for="hardDeleteConfirm{{ c.id }}">
+                        Type the client name exactly to confirm: <strong class="text-white">{{ c.name }}</strong>
+                    </label>
+                    <input type="text" class="form-control form-control-sm bg-dark text-white border-danger mb-2"
+                           id="hardDeleteConfirm{{ c.id }}" name="confirm_name"
+                           data-hard-delete-confirm="{{ c.id }}"
+                           data-expected-name="{{ c.name }}" autocomplete="off" required>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger btn-sm fw-bold"
+                            data-hard-delete-submit="{{ c.id }}" disabled>
+                        <i class="bi bi-trash3-fill me-1"></i> Permanently Delete &amp; Reverse
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
 <script>
 function loadClientModal(url, mode) {
     const isTransfer = mode === 'transfer';
@@ -439,5 +518,106 @@ document.addEventListener('click', function(event) {
     event.preventDefault();
     loadClientModal(button.dataset.clientModalUrl, button.dataset.clientModal);
 });
+
+/* --- master admin: permanent client delete -------------------------------
+   The preview is fetched when the dialog opens so the blast radius is visible
+   before anything is typed, and the submit button stays disabled until the
+   acknowledgement box is ticked AND the client name is retyped exactly.     */
+{% if is_master_admin %}
+function hardDeletePreviewRows(d) {
+    const rows = [
+        ['Direct sales', d.sales],
+        ['Bookings', d.bookings],
+        ['Payments received / refunded', d.payments],
+        ['Material returns', d.material_returns],
+        ['Pending bills', d.pending_bills],
+        ['Waive-offs', d.waive_offs],
+        ['Invoices', d.invoices],
+        ['Stock ledger rows', d.stock_entries],
+        ['Dispatch deliveries', d.deliveries],
+        ['Driver payments', d.driver_payments],
+        ['Account (cash/bank) transactions reversed', d.account_transactions_reversed],
+        ['Linked financial accounts unlinked', d.linked_accounts],
+    ];
+    return rows.map(function (r) {
+        const n = Number(r[1] || 0);
+        const cls = n > 0 ? 'text-warning fw-bold' : 'text-white-50';
+        return '<div class="d-flex justify-content-between border-bottom border-secondary py-1">'
+             + '<span>' + r[0] + '</span><span class="' + cls + '">' + n + '</span></div>';
+    }).join('');
+}
+
+function loadHardDeletePreview(host) {
+    if (!host || host.dataset.previewLoaded === '1') return;
+    host.dataset.previewLoaded = '1';
+    fetch(host.dataset.previewUrl, {headers: {'Accept': 'application/json'}})
+        .then(function (r) { return r.json().then(function (b) { return {ok: r.ok, body: b}; }); })
+        .then(function (res) {
+            const d = res.body || {};
+            if (!res.ok) {
+                host.innerHTML = '<span class="text-danger">' + (d.error || 'Preview unavailable.') + '</span>';
+                return;
+            }
+            let html = hardDeletePreviewRows({
+                sales: d.sales, bookings: d.bookings, payments: d.payments,
+                material_returns: d.material_returns, pending_bills: d.pending_bills,
+                waive_offs: d.waive_offs, invoices: d.invoices, stock_entries: d.stock_entries,
+                deliveries: d.deliveries, driver_payments: d.driver_payments,
+                account_transactions_reversed: d.account_transactions,
+                linked_accounts: d.linked_accounts,
+            });
+            if (d.is_protected) {
+                html += '<div class="alert alert-warning small py-2 mt-2 mb-0">This is a shared system '
+                      + 'bucket (walk-in sales), not one customer. Permanent deletion is blocked — '
+                      + 'suspend it instead.</div>';
+            }
+            host.innerHTML = html;
+        })
+        .catch(function () {
+            host.innerHTML = '<span class="text-danger">Could not load the preview. '
+                           + 'Reload the page and try again.</span>';
+        });
+}
+
+function syncHardDeleteSubmit(clientId) {
+    const ack = document.querySelector('[data-hard-delete-ack="' + clientId + '"]');
+    const name = document.querySelector('[data-hard-delete-confirm="' + clientId + '"]');
+    const btn = document.querySelector('[data-hard-delete-submit="' + clientId + '"]');
+    if (!ack || !name || !btn) return;
+    const expected = (name.dataset.expectedName || '').trim().toLowerCase();
+    const typed = (name.value || '').trim().toLowerCase();
+    btn.disabled = !(ack.checked && expected && typed === expected);
+}
+
+document.addEventListener('show.bs.modal', function (event) {
+    const modal = event.target;
+    if (!modal || !modal.id || modal.id.indexOf('hardDeleteClientModal') !== 0) return;
+    const clientId = modal.id.replace('hardDeleteClientModal', '');
+    loadHardDeletePreview(document.getElementById('hardDeletePreview' + clientId));
+    syncHardDeleteSubmit(clientId);
+});
+
+document.addEventListener('input', function (event) {
+    const el = event.target.closest('[data-hard-delete-confirm]');
+    if (el) syncHardDeleteSubmit(el.dataset.hardDeleteConfirm);
+});
+
+document.addEventListener('change', function (event) {
+    const el = event.target.closest('[data-hard-delete-ack]');
+    if (el) syncHardDeleteSubmit(el.dataset.hardDeleteAck);
+});
+
+document.addEventListener('submit', function (event) {
+    const form = event.target.closest('[data-hard-delete-client-form]');
+    if (!form) return;
+    syncHardDeleteSubmit(form.dataset.hardDeleteClientForm);
+    const btn = form.querySelector('[data-hard-delete-submit]');
+    if (btn && btn.disabled) {
+        event.preventDefault();
+        return;
+    }
+    if (typeof window.showLoading === 'function') window.showLoading();
+});
+{% endif %}
 </script>
 {% endblock %}
