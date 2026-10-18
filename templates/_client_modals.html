@@ -1,7 +1,7 @@
 <div class="modal fade" id="editCModal{{ c.id }}" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <form action="/edit_client/{{ c.id }}" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold">Edit Client</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -74,7 +74,7 @@
 <div class="modal fade" id="transferCModal{{ c.id }}" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <form action="/transfer_client/{{ c.id }}" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-info fw-bold"><i class="bi bi-arrow-right-circle me-2"></i>Transfer Client Data</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>

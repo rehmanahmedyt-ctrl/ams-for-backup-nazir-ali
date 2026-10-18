@@ -44,6 +44,45 @@
     var loaderState = 'idle';     // 'idle' | 'loading' | 'error'
     var loaderModalEl = null;     // the reusable spinner/error modal element
 
+    /* Attach the session CSRF token to every mutating form in a freshly injected
+       fragment.
+
+       layout.html injects the token into all forms at DOMContentLoaded, which is
+       long before an on-demand modal is fetched — so without this, a lazy dialog
+       posts with no token and the server answers 400 "Invalid or expired form
+       token".  That silently broke Edit Client (opening balance, name, code,
+       pages), Transfer Client, Edit Booking, Edit Sale and the pending-bill
+       dialogs.  Keeping the injection here means a new partial cannot regress
+       the same way even if it forgets its own hidden input. */
+    function sessionCsrfToken() {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
+        // Fallback for pages rendered before the meta tag existed.
+        var input = document.querySelector('input[name="_csrf_token"]');
+        return input ? input.value : '';
+    }
+
+    function attachCsrfTokens(root) {
+        var token = sessionCsrfToken();
+        if (!token || !root) return;
+        var forms = root.tagName === 'FORM' ? [root] : Array.prototype.slice.call(root.querySelectorAll('form'));
+        forms.forEach(function (form) {
+            var method = (form.getAttribute('method') || 'GET').toUpperCase();
+            if (['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) === -1) return;
+            var existing = form.querySelector('input[name="_csrf_token"]');
+            if (existing) {
+                // A partial may render the token itself; never let it go stale.
+                if (!existing.value) existing.value = token;
+                return;
+            }
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = '_csrf_token';
+            input.value = token;
+            form.appendChild(input);
+        });
+    }
+
     function ensureLoaderModal() {
         if (loaderModalEl && document.body.contains(loaderModalEl)) return loaderModalEl;
         var wrap = document.createElement('div');
@@ -173,6 +212,9 @@
                 .then(function (html) {
                     hideLoader();
                     host.innerHTML = html;
+                    // The fragment's forms are brand new to the DOM, so the
+                    // page-load CSRF injection never saw them.
+                    attachCsrfTokens(host);
                     var modalEl = host.querySelector(opts.selector || '[class^="modal"]');
                     if (!modalEl) throw new Error('The form was not returned by the server. Try again.');
                     // [Ahmed] A throwing onReady initializer used to prevent
@@ -220,5 +262,11 @@
         attempt();
     }
 
-    window.AMSLazyModal = { load: load, TIMEOUT_MS: DEFAULT_TIMEOUT_MS };
+    window.AMSLazyModal = {
+        load: load,
+        TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
+        // Exposed so any other code path that injects a server-rendered form
+        // fragment into the live page can tokenise it the same way.
+        attachCsrfTokens: attachCsrfTokens,
+    };
 })();

@@ -1,7 +1,7 @@
 <div class="modal fade" id="editBookingModal{{ booking.id }}" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered booking-modal-dialog">
         <form class="modal-content border-secondary ui-helper-form" style="background: #1e293b;" action="/edit_bill/Booking/{{ booking.id }}" method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold">Edit Booking: {{ booking.manual_bill_no or 'No Bill' }}</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>

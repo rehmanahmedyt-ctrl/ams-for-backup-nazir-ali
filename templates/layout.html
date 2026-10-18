@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Session-bound CSRF token, readable by scripts.  The form injector below
+         covers every form present at DOMContentLoaded, but on-demand modals are
+         fetched later; AMSLazyModal reads this meta tag to attach the same token
+         to those forms, so a lazily-loaded dialog can never post untokened. -->
+    <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <title>AMS SYSTEM FOR EASE</title>
     <!-- [Ahmed] Vendor UI libraries locally (bootstrap 5.3.0, bootstrap-icons
          1.10.0, flatpickr 4.6.13).  Loading these from cdn.jsdelivr.net made
