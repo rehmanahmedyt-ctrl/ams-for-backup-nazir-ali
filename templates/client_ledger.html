@@ -47,6 +47,7 @@
 <div class="modal fade" id="openingBalanceModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <form action="{{ url_for('client_opening_balance', id=client.id) }}" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold mb-0">Set Opening Balance</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
