@@ -19,7 +19,7 @@ import re
 
 import pytest
 
-from models import db, Client, DirectSale, PendingBill
+from models import db, Client, DirectSale, PendingBill, Booking, Payment
 from tests.conftest import make_csrf_client
 
 LOGIN = {"username": "Admin", "password": "Admin@fbm12345"}
@@ -217,6 +217,70 @@ def test_client_ledger_opening_balance_form_embeds_csrf_token(app_factory, tmp_p
         row = db.session.get(Client, client_id)
         assert row.opening_balance == pytest.approx(88000.0)
         assert row.opening_balance_date.strftime("%Y-%m-%d") == "2026-07-07"
+
+
+def test_client_ledger_edit_forms_embed_csrf_token(app_factory, tmp_path):
+    """Ledger edit modals must submit the server's session-bound CSRF field.
+
+    They are rendered in the page (rather than fetched as lazy fragments), but
+    explicit tokens keep edits working when the shared JavaScript injector is
+    blocked, stale, or fails to run.
+    """
+    app = _csrf_enforced_app(app_factory, tmp_path)
+    raw, token = _raw_login(app)
+    client_id = _seed_client(app, name="Ledger Edit Client")
+
+    with app.app_context():
+        client_row = db.session.get(Client, client_id)
+        payment = Payment(client_id=client_id, client_name=client_row.name,
+                          amount=1000, method="Cash")
+        booking = Booking(client_name=client_row.name, amount=2000,
+                          paid_amount=500)
+        sale = DirectSale(client_name=client_row.name, client_code=client_row.code,
+                          category="Credit Customer", amount=3000, paid_amount=1000)
+        db.session.add_all([payment, booking, sale])
+        db.session.commit()
+        transaction_ids = {
+            "Payment": payment.id,
+            "Booking": booking.id,
+            "DirectSale": sale.id,
+        }
+
+    page = raw.get(f"/ledger/{client_id}")
+    assert page.status_code == 200, page.get_data(as_text=True)[:300]
+    forms = _forms(page.get_data(as_text=True))
+    for method, fields, chunk in forms:
+        if method in MUTATING:
+            assert fields.get("_csrf_token") == token, (
+                f"POST form missing the session token: {chunk[:120]}")
+
+    for trans_type, transaction_id in transaction_ids.items():
+        action = f"/edit_ledger_transaction/{trans_type}/{transaction_id}"
+        matching = [
+            fields for method, fields, chunk in forms
+            if method == "POST" and action in chunk
+        ]
+        assert len(matching) == 1, f"missing {trans_type} edit form in client ledger"
+        assert matching[0].get("_csrf_token") == token, (
+            f"{trans_type} edit form did not embed this session's CSRF token")
+        assert "csrf_token" not in matching[0], (
+            f"{trans_type} edit form used the unread field name 'csrf_token'")
+
+    # Exercise a real edit through the raw client so this test cannot be made
+    # green by the automatic CSRF fixture adding the token for us.
+    payment_id = transaction_ids["Payment"]
+    response = raw.post(
+        f"/edit_ledger_transaction/Payment/{payment_id}",
+        data={
+            "amount": "1250",
+            "method": "Cash",
+            "date_posted": "2026-07-07T10:30",
+            "_csrf_token": token,
+        },
+    )
+    assert response.status_code in (302, 303), response.get_data(as_text=True)[:300]
+    with app.app_context():
+        assert db.session.get(Payment, payment_id).amount == pytest.approx(1250.0)
 
 
 # ---------------------------------------------------------------------------
