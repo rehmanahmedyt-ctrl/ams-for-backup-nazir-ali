@@ -18,6 +18,7 @@ env/
 # --- Runtime data: SQLite databases, secret_key, logs, backups, import artefacts ---
 # Everything under instance/ is created and managed by the running app.
 instance/
+static/uploads/
 *.db
 *.sqlite
 *.sqlite3

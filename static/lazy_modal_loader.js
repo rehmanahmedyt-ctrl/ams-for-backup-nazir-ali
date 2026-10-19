@@ -55,8 +55,11 @@
        dialogs.  Keeping the injection here means a new partial cannot regress
        the same way even if it forgets its own hidden input. */
     function sessionCsrfToken() {
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return '';
         var meta = document.querySelector('meta[name="csrf-token"]');
-        if (meta && meta.getAttribute('content')) return meta.getAttribute('content');
+        if (meta && typeof meta.getAttribute === 'function' && meta.getAttribute('content')) {
+            return meta.getAttribute('content');
+        }
         // Fallback for pages rendered before the meta tag existed.
         var input = document.querySelector('input[name="_csrf_token"]');
         return input ? input.value : '';
@@ -65,7 +68,9 @@
     function attachCsrfTokens(root) {
         var token = sessionCsrfToken();
         if (!token || !root) return;
-        var forms = root.tagName === 'FORM' ? [root] : Array.prototype.slice.call(root.querySelectorAll('form'));
+        var forms = root.tagName === 'FORM'
+            ? [root]
+            : (typeof root.querySelectorAll === 'function' ? Array.prototype.slice.call(root.querySelectorAll('form')) : []);
         forms.forEach(function (form) {
             var method = (form.getAttribute('method') || 'GET').toUpperCase();
             if (['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) === -1) return;
@@ -203,7 +208,12 @@
             var controller = new AbortController();
             var timer = setTimeout(function () { controller.abort(); }, DEFAULT_TIMEOUT_MS);
 
-            fetch(opts.url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: controller.signal })
+            fetch(opts.url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: controller.signal
+            })
                 .then(function (response) {
                     clearTimeout(timer);
                     if (!response.ok) throw new Error('Server returned ' + response.status + '. Try again.');

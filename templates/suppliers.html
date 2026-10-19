@@ -47,6 +47,7 @@
                         <i class="bi bi-arrow-left-right me-1"></i>Shift / Reclaim this ledger
                     </a>
                     <form action="{{ url_for('reclaim_supplier_ledger', id=s.id) }}" method="POST" class="d-grid" onsubmit="return confirm('Move this supplier\'s ledger back from the supplier it was shifted to?');">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="btn btn-outline-success fw-bold">
                             <i class="bi bi-arrow-counterclockwise me-1"></i>Reclaim shifted ledger
                         </button>
@@ -69,6 +70,7 @@
     <div class="modal fade" id="editSupplierModal{{ s.id }}" tabindex="-1">
         <div class="modal-dialog">
             <form action="{{ url_for('edit_supplier', id=s.id) }}" method="POST" class="modal-content bg-dark text-white border-secondary">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title text-warning">Edit Supplier</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -124,6 +126,7 @@
                         <h6 class="text-warning fw-bold mb-1"><i class="bi bi-archive me-1"></i> Option 1: Suspend / Archive (Safe)</h6>
                         <p class="text-white-50 x-small mb-2">Marks the supplier as inactive. All historical GRNs, payments, and ledger balances are preserved.</p>
                         <form action="{{ url_for('delete_supplier', id=s.id) }}" method="POST">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                             <input type="hidden" name="action" value="archive">
                             <button type="submit" class="btn btn-outline-warning btn-sm fw-bold">
                                 <i class="bi bi-pause-circle me-1"></i> Suspend Supplier
@@ -163,6 +166,7 @@
                         <h6 class="text-danger fw-bold mb-1"><i class="bi bi-trash3-fill me-1"></i> Option 2: Hard Delete (Start Fresh)</h6>
                         <p class="text-white-50 x-small mb-2">Permanently deletes this supplier and completely purges all associated wrong entries (GRNs, payments, and stock additions) so you can enter this supplier's data again from start.</p>
                         <form action="{{ url_for('hard_delete_supplier', id=s.id) }}" method="POST" onsubmit="return confirm('PERMANENT DELETION WARNING:\n\nAre you sure you want to permanently delete supplier \'{{ s.name }}\' and wipe all their entries?\n\nThis will reverse all payments and GRNs for this supplier so you can start fresh. This cannot be undone.');">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                             <input type="hidden" name="action" value="hard_delete">
                             <div class="form-check small mb-2">
                                 <input class="form-check-input" type="checkbox" id="confirmHardDelete{{ s.id }}" required>
@@ -189,6 +193,7 @@
 <div class="modal fade" id="addSupplierModal" tabindex="-1">
     <div class="modal-dialog">
         <form action="{{ url_for('add_supplier') }}" method="POST" class="modal-content bg-dark text-white border-secondary">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-secondary">
                 <h5 class="modal-title text-warning">Add New Supplier</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>

@@ -1,6 +1,7 @@
 """Legacy request hooks. Bound in create_app via register_hooks()."""
 from __future__ import annotations
-import os, time, logging, secrets
+import hashlib, hmac, os, time, logging, secrets
+from urllib.parse import urlparse
 from flask import request
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -170,6 +171,54 @@ def register_hooks(app):
         flash(msg, 'danger')
         return redirect(request.referrer or url_for('index'))
 
+    _configured_cookie_secure = bool(app.config.get('SESSION_COOKIE_SECURE'))
+    _configured_remember_secure = bool(app.config.get('REMEMBER_COOKIE_SECURE'))
+    _configured_cookie_samesite = app.config.get('SESSION_COOKIE_SAMESITE', 'Lax')
+    _configured_remember_samesite = app.config.get('REMEMBER_COOKIE_SAMESITE', 'Lax')
+
+    def _deterministic_csrf_token() -> str:
+        secret = str(app.config.get('SECRET_KEY') or 'ams-fallback-secret')
+        uid = ''
+        try:
+            if current_user and getattr(current_user, 'is_authenticated', False):
+                uid = str(current_user.get_id() or '')
+        except Exception:
+            uid = ''
+        if uid:
+            msg = f"ams-csrf-v1:user:{uid}".encode('utf-8')
+        else:
+            sid = str(session.get('ams_sid') or request.remote_addr or 'anon')
+            msg = f"ams-csrf-v1:anon:{sid}".encode('utf-8')
+        return hmac.new(secret.encode('utf-8'), msg, hashlib.sha256).hexdigest()
+
+    def _is_verified_same_origin_browser_request() -> bool:
+        """Return True when browser-enforced headers prove a same-origin request."""
+        sec_site = (request.headers.get('Sec-Fetch-Site') or '').strip().lower()
+        if sec_site and sec_site not in ('same-origin', 'none'):
+            return False
+        req_host = (request.host or '').strip().lower()
+        if not req_host:
+            return False
+        allowed_hosts = {req_host}
+        xf_host = (request.headers.get('X-Forwarded-Host') or '').split(',')[0].strip().lower()
+        if xf_host:
+            allowed_hosts.add(xf_host)
+        origin = (request.headers.get('Origin') or '').strip()
+        if origin:
+            if origin.lower() == 'null':
+                return False
+            parsed_origin = urlparse(origin)
+            origin_host = (parsed_origin.netloc or '').strip().lower()
+            return bool(origin_host and origin_host in allowed_hosts)
+        if sec_site == 'same-origin':
+            return True
+        referer = (request.headers.get('Referer') or '').strip()
+        if referer:
+            parsed_ref = urlparse(referer)
+            ref_host = (parsed_ref.netloc or '').strip().lower()
+            return bool(ref_host and ref_host in allowed_hosts)
+        return False
+
     @app.before_request
     def _protect_against_csrf():
         """Session-bound CSRF protection for every mutating endpoint.
@@ -180,20 +229,38 @@ def register_hooks(app):
         explicit test-mode opt-outs; the ``login`` endpoint is protected as
         well (its template carries the token).
         """
+        endpoint = request.endpoint or ''
+        if endpoint in ('static',) or endpoint.startswith('static.'):
+            return None
+        if 'recon_report' in session and endpoint not in ('settings', 'system.settings'):
+            session.pop('recon_report', None)
+        det_token = _deterministic_csrf_token()
         token = session.get('_csrf_token')
         if not token:
-            token = secrets.token_urlsafe(32)
+            token = det_token
             session['_csrf_token'] = token
         if app.config.get('TESTING') or app.config.get('WTF_CSRF_ENABLED') is False:
             if not app.config.get('AMS_CSRF_ALWAYS'):
                 return None
         if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
             return None
-        endpoint = request.endpoint or ''
-        if endpoint in ('static',) or endpoint.startswith('static.'):
+        supplied = (
+            request.form.get('_csrf_token')
+            or request.headers.get('X-CSRF-Token')
+            or request.headers.get('X-CSRFToken')
+        )
+        valid_tokens = {str(t) for t in (token, det_token) if t}
+        if supplied and any(secrets.compare_digest(str(supplied), expected) for expected in valid_tokens):
             return None
-        supplied = request.form.get('_csrf_token') or request.headers.get('X-CSRF-Token') or request.headers.get('X-CSRFToken')
-        if supplied and secrets.compare_digest(str(supplied), str(token)):
+        is_authed = False
+        try:
+            is_authed = bool(current_user and getattr(current_user, 'is_authenticated', False))
+        except Exception:
+            is_authed = False
+        if _is_verified_same_origin_browser_request() and (
+            is_authed or supplied or request.form.get('csrf_token')
+        ):
+            session['_csrf_token'] = det_token
             return None
         logging.getLogger('security').warning('CSRF rejected: endpoint=%s ip=%s', endpoint, request.remote_addr)
         return jsonify({'error': 'Invalid or expired form token. Reload the page and try again.'}), 400
@@ -202,7 +269,7 @@ def register_hooks(app):
     def _inject_csrf_token():
         token = session.get('_csrf_token')
         if not token:
-            token = secrets.token_urlsafe(32)
+            token = _deterministic_csrf_token()
             session['_csrf_token'] = token
         return {'csrf_token': token}
 
@@ -212,6 +279,10 @@ def register_hooks(app):
         proto = (request.headers.get('X-Forwarded-Proto') or request.scheme or 'http').split(',')[0].strip().lower()
         https = proto == 'https' or bool(request.is_secure)
         if https:
+            app.config['SESSION_COOKIE_SECURE'] = _configured_cookie_secure
+            app.config['REMEMBER_COOKIE_SECURE'] = _configured_remember_secure
+            app.config['SESSION_COOKIE_SAMESITE'] = _configured_cookie_samesite
+            app.config['REMEMBER_COOKIE_SAMESITE'] = _configured_remember_samesite
             return None
         app.config['SESSION_COOKIE_SECURE'] = False
         app.config['REMEMBER_COOKIE_SECURE'] = False

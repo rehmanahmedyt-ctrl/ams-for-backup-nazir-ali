@@ -29,7 +29,19 @@ def reconcile_data():
                 report['bill_audit_report_path'] = path
             except Exception:
                 pass
-        session['recon_report'] = report
+        session['recon_report'] = {
+            'ran_at': report.get('ran_at'),
+            'mode': report.get('mode'),
+            'entries_scanned': report.get('entries_scanned', 0),
+            'broken_refs_count': report.get('broken_refs_count', 0),
+            'direct_sale_mismatch_count': report.get('direct_sale_mismatch_count', 0),
+            'direct_sale_waive_mismatch_count': report.get('direct_sale_waive_mismatch_count', 0),
+            'booking_mismatch_count': report.get('booking_mismatch_count', 0),
+            'payment_mismatch_count': report.get('payment_mismatch_count', 0),
+            'bill_normalized_count': report.get('bill_normalized_count', 0),
+            'fixes_applied': report.get('fixes_applied', 0),
+            'broken_refs_sample': (report.get('broken_refs_sample') or [])[:5],
+        }
         flash(
             f"Reconciliation {report['mode']} complete. Broken refs: {report['broken_refs_count']}, "
             f"DS mismatches: {report['direct_sale_mismatch_count']}, "

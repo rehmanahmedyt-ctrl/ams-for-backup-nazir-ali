@@ -67,6 +67,7 @@
       <a class="btn btn-outline-primary fw-bold" href="{{ url_for('supplier_ledger_shift_page', id=entity.id) }}" title="Move every entry of this ledger to another supplier and update the Accounts section"><i class="bi bi-arrow-left-right me-1"></i>Shift entire ledger</a>
       {% if entity.transferred_to_id %}
       <form action="{{ url_for('reclaim_supplier_ledger', id=entity.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Move this ledger back from the supplier it was shifted to?');">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-outline-success fw-bold"><i class="bi bi-arrow-counterclockwise me-1"></i>Reclaim shifted ledger</button>
       </form>
       {% endif %}
@@ -152,6 +153,7 @@
               <a href="{{ url_for('download_invoice', bill_no=row.reference, src='grn', src_id=row.source_id) }}" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Print GRN"><i class="bi bi-printer"></i></a>
               <a href="{{ url_for('edit_grn', id=row.source_id) }}" class="btn btn-sm btn-outline-warning me-1" title="Edit GRN"><i class="bi bi-pencil"></i></a>
               <form action="{{ url_for('grn') }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this GRN? This will reverse the stock addition.');">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="delete">
                 <input type="hidden" name="id" value="{{ row.source_id }}">
                 <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete GRN"><i class="bi bi-trash"></i></button>
@@ -174,11 +176,12 @@
                 <button type="button" class="btn btn-sm btn-outline-primary me-1" title="Move this payment to another supplier (Accounts + cash/bank follow)"
                         onclick="openLedgerRowShift('payment', {{ row.source_id }}, '{{ row.reference|e }}')"><i class="bi bi-arrow-left-right"></i></button>
                 <form action="{{ url_for('accounts.supplier_payment_delete', id=row.source_id) }}" method="POST" class="d-inline" onsubmit="return confirm('Delete this supplier payment? Its accounting effects will be reversed and its history retained.');">
+                  <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                   <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete payment"><i class="bi bi-trash"></i></button>
                 </form>
               {% endif %}
             {% elif is_driver and row.source_type == 'DeliveryPersonPayment' and row.source_id %}
-              {% if not row.source.is_void %}<button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#editDriverPayment{{ row.source_id }}" title="Edit settlement"><i class="bi bi-pencil"></i></button><form method="POST" action="{{ url_for('void_delivery_person_payment', id=row.source_id) }}" class="d-inline" onsubmit="return confirm('Reverse this settlement? The historical row will be preserved.');"><button class="btn btn-sm btn-outline-danger" title="Reverse settlement"><i class="bi bi-arrow-counterclockwise"></i></button></form>{% else %}<form method="POST" action="{{ url_for('restore_delivery_person_payment', id=row.source_id) }}" class="d-inline"><button class="btn btn-sm btn-outline-success" title="Restore settlement"><i class="bi bi-arrow-repeat"></i></button></form>{% endif %}
+              {% if not row.source.is_void %}<button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#editDriverPayment{{ row.source_id }}" title="Edit settlement"><i class="bi bi-pencil"></i></button><form method="POST" action="{{ url_for('void_delivery_person_payment', id=row.source_id) }}" class="d-inline" onsubmit="return confirm('Reverse this settlement? The historical row will be preserved.');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-outline-danger" title="Reverse settlement"><i class="bi bi-arrow-counterclockwise"></i></button></form>{% else %}<form method="POST" action="{{ url_for('restore_delivery_person_payment', id=row.source_id) }}" class="d-inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-outline-success" title="Restore settlement"><i class="bi bi-arrow-repeat"></i></button></form>{% endif %}
             {% else %}<span class="text-white-50">—</span>{% endif %}
           </td>
         </tr>
@@ -204,6 +207,7 @@
 <div class="modal fade" id="editDriverPayment{{ row.source_id }}" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <form class="modal-content border-secondary" style="background:#1e293b" method="POST" action="{{ url_for('edit_delivery_person_payment', id=row.source_id) }}" data-driver-edit-form>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <div class="modal-header border-0">
         <h5 class="text-warning mb-0">Edit driver payment</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -263,6 +267,7 @@
 <div class="modal fade" id="driverSettlementModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <form class="modal-content border-secondary" style="background:#1e293b" method="POST" action="{{ url_for('settle_delivery_person', id=entity.id) }}" data-driver-pay-form>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <div class="modal-header border-0">
         <h5 class="text-success mb-0"><i class="bi bi-cash-stack me-2"></i>Pay driver</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -353,7 +358,7 @@ document.querySelectorAll('[data-driver-pay-form], [data-driver-edit-form]').for
 {% endif %}
 
 {% if opening_url %}
-<div class="modal fade" id="openingBalanceModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog"><form class="modal-content border-secondary" style="background:#1e293b" method="POST" action="{{ opening_url }}"><div class="modal-header border-0"><h5 class="text-warning">Set opening balance</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body"><label class="text-white-50 small">Opening balance</label><input type="number" step="0.01" name="opening_balance" value="{{ '%.2f'|format(entity.opening_balance or 0) }}" class="form-control bg-dark text-white border-secondary" required><small class="text-white-50">Positive is owed by the counter-party; negative is an advance.</small><label class="text-white-50 small mt-3">Opening date</label><input type="date" name="opening_balance_date" value="{{ entity.opening_balance_date.strftime('%Y-%m-%d') if entity.opening_balance_date else '' }}" class="form-control bg-dark text-white border-secondary" required></div><div class="modal-footer border-0"><button class="btn btn-warning text-dark fw-bold w-100">Save opening balance</button></div></form></div></div>
+<div class="modal fade" id="openingBalanceModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog"><form class="modal-content border-secondary" style="background:#1e293b" method="POST" action="{{ opening_url }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><div class="modal-header border-0"><h5 class="text-warning">Set opening balance</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body"><label class="text-white-50 small">Opening balance</label><input type="number" step="0.01" name="opening_balance" value="{{ '%.2f'|format(entity.opening_balance or 0) }}" class="form-control bg-dark text-white border-secondary" required><small class="text-white-50">Positive is owed by the counter-party; negative is an advance.</small><label class="text-white-50 small mt-3">Opening date</label><input type="date" name="opening_balance_date" value="{{ entity.opening_balance_date.strftime('%Y-%m-%d') if entity.opening_balance_date else '' }}" class="form-control bg-dark text-white border-secondary" required></div><div class="modal-footer border-0"><button class="btn btn-warning text-dark fw-bold w-100">Save opening balance</button></div></form></div></div>
 {% endif %}
 
 <script>
@@ -418,6 +423,7 @@ document.addEventListener('DOMContentLoaded', function () {
 <div class="modal fade" id="ledgerRowShiftModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <form class="modal-content border-secondary" style="background:#1e293b" method="POST" id="ledgerRowShiftForm" action="">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <div class="modal-header border-secondary">
         <h5 class="modal-title text-primary fw-bold"><i class="bi bi-arrow-left-right me-2"></i>Shift one ledger entry</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
