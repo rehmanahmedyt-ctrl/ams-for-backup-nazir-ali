@@ -122,6 +122,7 @@
 </div>
 
 <form method="POST" action="{{ url_for('shift_supplier_ledger', id=supplier.id) }}" id="ledgerShiftForm">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
   <div class="card ledger-card shadow-sm mb-4">
     <div class="card-header bg-transparent border-secondary"><h5 class="mb-0 text-warning"><i class="bi bi-arrow-right-circle me-2"></i>Receiving supplier</h5></div>
     <div class="card-body">

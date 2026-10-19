@@ -318,3 +318,125 @@ def test_other_lazy_fragments_also_carry_the_token(app_factory, tmp_path):
             assert "csrf_token" not in fields, f"{url} still posts 'csrf_token'"
             assert fields.get("_csrf_token") == token, f"{url} form lacks the session token"
     assert checked >= 2, f"expected several mutating forms across fragments, found {checked}"
+
+
+def test_edit_client_succeeds_when_session_csrf_cookie_is_dropped_or_rotated(app_factory, tmp_path):
+    """If the browser session cookie does not persist _csrf_token between GET
+    and POST (e.g. oversized cookie, concurrent tab rotation, or remember_token
+    restore), the deterministic user-bound CSRF token still validates and saves
+    client details instead of returning the 400 JSON error page."""
+    app = _csrf_enforced_app(app_factory, tmp_path)
+    raw, _ = _raw_login(app)
+    client_id = _seed_client(app)
+
+    # Clear _csrf_token from session so GET generates the deterministic token.
+    with raw.session_transaction() as sess:
+        sess.pop("_csrf_token", None)
+
+    modal_resp = raw.get(f"/clients/{client_id}/modals")
+    assert modal_resp.status_code == 200
+    forms = _forms(modal_resp.get_data(as_text=True))
+    edit_fields = next(fields for method, fields, chunk in forms if f"/edit_client/{client_id}" in chunk)
+    rendered_token = edit_fields["_csrf_token"]
+    assert rendered_token
+
+    # Simulate cookie loss / session rotation before POST arrives.
+    with raw.session_transaction() as sess:
+        sess["_csrf_token"] = "rotated-other-tab-token"
+
+    resp = raw.post(
+        f"/edit_client/{client_id}",
+        data={
+            "name": "Updated Via Deterministic Token",
+            "code": "CL-1",
+            "category": "General",
+            "phone": "03001234567",
+            "opening_balance": "54321.50",
+            "opening_balance_date": "2026-08-01",
+            "_csrf_token": rendered_token,
+        },
+    )
+    assert resp.status_code in (302, 303), resp.get_data(as_text=True)
+    with app.app_context():
+        updated = db.session.get(Client, client_id)
+        assert updated.name == "Updated Via Deterministic Token"
+        assert updated.phone == "03001234567"
+        assert updated.opening_balance == pytest.approx(54321.50)
+
+
+def test_same_origin_browser_edit_client_with_cached_form_succeeds_while_cross_origin_rejected(app_factory, tmp_path):
+    """A real browser submitting from the same origin (Sec-Fetch-Site: same-origin
+    / matching Origin) must succeed even if an older cached modal sent a stale
+    token, whereas a cross-origin request must be rejected with 400."""
+    app = _csrf_enforced_app(app_factory, tmp_path)
+    raw, token = _raw_login(app)
+    client_id = _seed_client(app)
+
+    # Cross-origin attempt must be blocked.
+    cross_resp = raw.post(
+        f"/edit_client/{client_id}",
+        data={
+            "name": "Cross Origin Hijack",
+            "code": "CL-1",
+            "category": "General",
+            "opening_balance": "99999",
+            "csrf_token": token,
+        },
+        headers={
+            "Origin": "https://evil.example",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+    assert cross_resp.status_code == 400
+    assert b"Invalid or expired form token" in cross_resp.data
+
+    # Same-origin browser submission from an authenticated user with a stale form succeeds.
+    same_origin_resp = raw.post(
+        f"/edit_client/{client_id}",
+        data={
+            "name": "Same Origin Browser Update",
+            "code": "CL-1",
+            "category": "General",
+            "opening_balance": "7777",
+            "opening_balance_date": "2026-09-01",
+            "csrf_token": "stale-cached-token",
+        },
+        headers={
+            "Origin": "http://localhost",
+            "Referer": "http://localhost/clients",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+    assert same_origin_resp.status_code in (302, 303), same_origin_resp.get_data(as_text=True)
+    with app.app_context():
+        updated = db.session.get(Client, client_id)
+        assert updated.name == "Same Origin Browser Update"
+        assert updated.opening_balance == pytest.approx(7777.0)
+
+
+def test_client_ledger_inline_edit_client_modal_updates_and_returns_to_ledger(app_factory, tmp_path):
+    """The individual Client Ledger page (/ledger/<id>) also embeds the Edit
+    Client modal with a safe next redirect back to /ledger/<id>."""
+    app = _csrf_enforced_app(app_factory, tmp_path)
+    raw, token = _raw_login(app)
+    client_id = _seed_client(app)
+
+    page = raw.get(f"/ledger/{client_id}")
+    assert page.status_code == 200
+    forms = _forms(page.get_data(as_text=True))
+    edit_forms = [fields for method, fields, chunk in forms if method == "POST" and f"/edit_client/{client_id}" in chunk]
+    assert edit_forms, "Expected inline /edit_client/<id> form on /ledger/<id>"
+    fields = edit_forms[0]
+    assert fields.get("_csrf_token") == token
+    assert fields.get("next") == f"/ledger/{client_id}"
+
+    fields["name"] = "Edited From Ledger Page"
+    fields["opening_balance"] = "3322.25"
+    resp = raw.post(f"/edit_client/{client_id}", data=fields)
+    assert resp.status_code in (302, 303)
+    assert resp.headers["Location"].endswith(f"/ledger/{client_id}")
+    with app.app_context():
+        updated = db.session.get(Client, client_id)
+        assert updated.name == "Edited From Ledger Page"
+        assert updated.opening_balance == pytest.approx(3322.25)
+

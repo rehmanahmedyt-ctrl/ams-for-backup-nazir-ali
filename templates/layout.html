@@ -647,7 +647,7 @@
 <script src="{{ url_for('static', filename='theme.js') }}"></script>
 <script src="{{ url_for('static', filename='ui.js') }}"></script>
 <script src="{{ url_for('static', filename='pan_view.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='lazy_modal_loader.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='lazy_modal_loader.js') }}?v=4"></script>
 
 <script>
     if (window.AMSTheme) {
@@ -1931,17 +1931,50 @@ function toggleNavGroup(groupId, btn) {
 
     // Attach the session-bound CSRF token to every mutating form. Keeping this
     // central prevents individual Accounts partials/modals from drifting.
-    document.addEventListener('DOMContentLoaded', function () {
-        const csrfToken = {{ (csrf_token or '')|tojson }};
+    (function () {
+        const csrfToken = {{ (csrf_token or '')|tojson }}
+            || (document.querySelector('meta[name="csrf-token"]') && document.querySelector('meta[name="csrf-token"]').getAttribute('content'))
+            || '';
         if (!csrfToken) return;
-        document.querySelectorAll('form').forEach(function (form) {
+
+        function ensureFormCsrfToken(form) {
+            if (!form || form.tagName !== 'FORM') return;
             const method = (form.getAttribute('method') || 'GET').toUpperCase();
             if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
-            if (form.querySelector('input[name="_csrf_token"]')) return;
+            const existing = form.querySelector('input[name="_csrf_token"]');
+            if (existing) {
+                if (!existing.value) existing.value = csrfToken;
+                return;
+            }
             const input = document.createElement('input');
-            input.type = 'hidden'; input.name = '_csrf_token'; input.value = csrfToken;
+            input.type = 'hidden';
+            input.name = '_csrf_token';
+            input.value = csrfToken;
             form.appendChild(input);
-        });
+        }
+
+        function attachAllForms() {
+            document.querySelectorAll('form').forEach(ensureFormCsrfToken);
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attachAllForms);
+        } else {
+            attachAllForms();
+        }
+
+        document.addEventListener('submit', function (e) {
+            if (e && e.target) ensureFormCsrfToken(e.target);
+        }, true);
+
+        if (typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype && !HTMLFormElement.prototype.__amsCsrfSubmitPatched) {
+            const origSubmit = HTMLFormElement.prototype.submit;
+            HTMLFormElement.prototype.submit = function () {
+                ensureFormCsrfToken(this);
+                return origSubmit.apply(this, arguments);
+            };
+            HTMLFormElement.prototype.__amsCsrfSubmitPatched = true;
+        }
 
         // Same-origin fetch/XHR mutations also carry the session token, so
         // JS-driven posts (imports, uploads, theme toggle) stay protected
@@ -1980,7 +2013,7 @@ function toggleNavGroup(groupId, btn) {
             };
             XMLHttpRequest.prototype.__amsCsrfPatched = true;
         }
-    });
+    })();
 
     // Reusable searchable enhancement for native selects whose options are
     // dynamically rebuilt by existing transaction scripts. It preserves the

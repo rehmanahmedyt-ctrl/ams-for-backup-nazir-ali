@@ -32,6 +32,7 @@
         <a href="/" class="btn btn-outline-light btn-sm fw-bold"><i class="bi bi-arrow-left me-1"></i> Back</a>
         <a href="/export_clients" class="btn btn-outline-success btn-sm fw-bold"><i class="bi bi-file-earmark-excel"></i> Export</a>
         <form action="{{ url_for('activate_all_clients') }}" method="POST" class="d-inline" onsubmit="return confirm('Activate all suspended clients?')">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-outline-success btn-sm fw-bold">
                 <i class="bi bi-play-circle me-1"></i> Activate All Suspended
             </button>
@@ -216,6 +217,7 @@ function addPageInput(containerId, value = '') {
                                 <button class="btn btn-outline-warning border-2" data-client-modal-url="{{ url_for('client_modals', client_id=c.id) }}" data-client-modal="edit" title="Edit"><i class="bi bi-pencil"></i></button>
                                 <button class="btn btn-outline-light border-2" data-client-modal-url="{{ url_for('client_modals', client_id=c.id) }}" data-client-modal="transfer" title="Transfer Data"><i class="bi bi-arrow-right-circle"></i></button>
                                 <form action="/delete_client/{{ c.id }}" method="POST" class="d-inline" onsubmit="return confirm('Suspend client {{ c.name }}?')">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                                     <button type="submit" class="btn btn-outline-danger border-2 {% if not is_master_admin %}rounded-end-pill{% endif %}" title="Suspend"><i class="bi bi-pause-circle"></i></button>
                                 </form>
                                 {% if is_master_admin %}
@@ -306,14 +308,17 @@ function addPageInput(containerId, value = '') {
                         </td>
                         <td class="text-white-50 small">{{ c.phone or '---' }}</td>
                         <td class="text-end pe-4">
+                            <button class="btn btn-outline-warning btn-sm border-2 rounded-pill shadow-sm me-1" data-client-modal-url="{{ url_for('client_modals', client_id=c.id) }}" data-client-modal="edit" title="Edit"><i class="bi bi-pencil"></i></button>
                             {% if c.transferred_to_id %}
                             <form action="/reclaim_client/{{ c.id }}" method="POST" class="d-inline">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                                 <button type="submit" class="btn btn-outline-success btn-sm border-2 rounded-pill shadow-sm me-1" title="Reclaim Data" onclick="return confirm('Reclaim data for {{ c.name }}?')">
                                     <i class="bi bi-arrow-left-circle"></i> Reclaim
                                 </button>
                             </form>
                             {% endif %}
                             <form action="{{ url_for('client_toggle_active', client_id=c.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Activate client {{ c.name }}?')">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                                 <button type="submit" class="btn btn-outline-success btn-sm border-2 rounded-pill shadow-sm">
                                     <i class="bi bi-play-circle"></i>
                                 </button>
@@ -357,6 +362,7 @@ function addPageInput(containerId, value = '') {
 <div class="modal fade" id="cModal" tabindex="-1">
     <div class="modal-dialog">
         <form action="/add_client" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold">Register New Client</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -447,7 +453,22 @@ function loadClientModal(url, mode) {
         onReady: function (modalEl) {
             const editForm = modalEl.querySelector('form');
             if (editForm) {
+                const ensureToken = function () {
+                    const meta = document.querySelector('meta[name="csrf-token"]');
+                    const tok = (meta && meta.getAttribute('content')) || {{ (csrf_token or '')|tojson }} || '';
+                    if (!tok) return;
+                    let inp = editForm.querySelector('input[name="_csrf_token"]');
+                    if (!inp) {
+                        inp = document.createElement('input');
+                        inp.type = 'hidden';
+                        inp.name = '_csrf_token';
+                        editForm.appendChild(inp);
+                    }
+                    if (!inp.value) inp.value = tok;
+                };
+                ensureToken();
                 editForm.addEventListener('submit', function () {
+                    ensureToken();
                     if (typeof window.showLoading === 'function') window.showLoading();
                 });
             }

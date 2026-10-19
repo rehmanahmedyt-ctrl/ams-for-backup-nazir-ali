@@ -2,6 +2,7 @@
     <div class="modal-dialog">
         <form action="/edit_client/{{ c.id }}" method="POST" class="modal-content border-secondary" style="background: #1e293b;">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+            {% if client_modal_next %}<input type="hidden" name="next" value="{{ client_modal_next }}">{% endif %}
             <div class="modal-header border-0">
                 <h5 class="text-warning fw-bold">Edit Client</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>

@@ -7,6 +7,7 @@
 {% from 'accounts/_entity_combobox.html' import entity_combobox %}
 <form id="clientPaymentForm" class="modal-content border-secondary ui-helper-form" style="background: #1e293b;"
       action="{{ url_for('accounts.client_payment_save') }}" method="POST" enctype="multipart/form-data">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="payment_id" id="cpPaymentId" value="">
     <input type="hidden" name="revision" id="cpRevision" value="">
     <input type="hidden" name="idempotency_key" id="cpIdempotencyKey" value="">

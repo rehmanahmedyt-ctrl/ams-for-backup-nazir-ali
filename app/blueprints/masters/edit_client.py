@@ -93,5 +93,8 @@ def edit_client(id):
         )
         db.session.commit()
         flash('Client updated', 'success')
+    next_url = (request.form.get('next') or '').strip()
+    if next_url.startswith('/') and not next_url.startswith('//'):
+        return redirect(next_url)
     return redirect(url_for('clients'))
 
