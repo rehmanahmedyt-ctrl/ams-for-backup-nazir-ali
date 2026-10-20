@@ -152,6 +152,14 @@ def edit_direct_sale(id):
         rates = request.form.getlist('unit_rate[]')
         grn_item_ids = request.form.getlist('grn_item_id[]')
         ignore_items = request.form.getlist('ignore_booking_item[]')
+        # Booking split as the edit sheet shows it: rows flagged `qty_is_due`
+        # post the DUE (excess) qty in ``qty[]`` and their booking-covered qty
+        # in ``booked_qty[]``.  Total dispatch = due + booked, the booked part
+        # is deducted from the booking and only the due part is charged.
+        # Rows without the flag post the total dispatch qty (add-sale form and
+        # older markup), so the booking balance decides the split.
+        booked_qtys = request.form.getlist('booked_qty[]')
+        qty_is_due_flags = request.form.getlist('qty_is_due[]')
 
         # Compute per-material booking balances for the resolved client so that an
         # edit can split each posted line into a reserved (rate 0) slice and a
@@ -237,7 +245,10 @@ def edit_direct_sale(id):
             for row in db.session.query(DirectSaleItem.product_name).filter_by(sale_id=sale.id).all()
         ]
         parsed_items = []
-        max_len = max(len(materials_list), len(alternate_list), len(qtys), len(rates))
+        max_len = max(
+            len(materials_list), len(alternate_list), len(qtys), len(rates),
+            len(booked_qtys), len(qty_is_due_flags)
+        )
         for idx in range(max_len):
             mat = materials_list[idx] if idx < len(materials_list) else ''
             alt = alternate_list[idx] if idx < len(alternate_list) else ''
@@ -246,7 +257,18 @@ def edit_direct_sale(id):
             mat_name_in = str(mat or '').strip()
             mid = material_ids[idx] if idx < len(material_ids) else ''
             qty_val = _to_float_or_zero(qty)
-            if not mat_name_in and not str(mid or '').strip() and qty_val <= 0:
+            # Booking split as posted by the edit sheet (see above): a flagged
+            # row carries its DUE qty in ``qty[]`` and its booking-covered qty
+            # in ``booked_qty[]``.
+            qty_is_due_row = False
+            if idx < len(qty_is_due_flags):
+                qty_is_due_row = str(qty_is_due_flags[idx] or '').strip().lower() in ['1', 'true', 'on', 'yes']
+            booked_hint = 0.0
+            if idx < len(booked_qtys):
+                booked_hint = max(0.0, _to_float_or_zero(booked_qtys[idx]))
+            # A fully booking-covered row can post due qty 0 — it is not empty.
+            row_total_qty = qty_val + (booked_hint if qty_is_due_row else 0.0)
+            if not mat_name_in and not str(mid or '').strip() and row_total_qty <= 0:
                 continue
             try:
                 mat_obj = resolve_transaction_material(
@@ -259,7 +281,7 @@ def edit_direct_sale(id):
                 return _fail_edit(str(ve))
             if not mat_obj:
                 return _fail_edit(MATERIAL_NOT_SELECTED_MSG)
-            if qty_val <= 0:
+            if row_total_qty <= 0:
                 continue
             rate_val = _to_float_or_zero(rate)
             if rate_val < 0:
@@ -299,17 +321,33 @@ def edit_direct_sale(id):
             is_alt = bool(alt_obj and delivered_name != mat_obj.name)
 
             # Split the row: the booked quantity is a rate-0 reservation
-            # fulfilment, the remainder is a real chargeable sale.  Both
-            # dispatch the DELIVERED material — an alternate booking must never
-            # post the excess against the original booked material.
-            qty_booking = 0.0
-            qty_sale = qty_val
+            # fulfilment, the remainder — and ONLY the remainder — is a real
+            # chargeable sale.  Both dispatch the DELIVERED material; an
+            # alternate booking must never post the excess against the original
+            # booked material.
             mat_key = _material_norm_key(mat_obj.name)
             balance = 0.0 if ignore_flag else float(booking_balances.get(mat_key, 0) or 0)
-            if balance > 0:
-                qty_booking = min(qty_val, balance)
-                qty_sale = qty_val - qty_booking
-                booking_balances[mat_key] = balance - qty_booking
+
+            # A `qty_is_due` row posts its due (excess) qty plus the qty the
+            # booking already covers; every other row posts the total dispatch
+            # qty and the booking balance decides how much of it is covered.
+            # Either way the booked part is deducted from the booking and ONLY
+            # the excess becomes due.
+            if ignore_flag:
+                # Chargeable-only row: nothing is taken from the booking.
+                dispatch_qty = qty_val
+                qty_booking = 0.0
+                qty_sale = dispatch_qty
+            elif qty_is_due_row:
+                dispatch_qty = qty_val + booked_hint
+                qty_booking = min(booked_hint, dispatch_qty)
+                qty_sale = dispatch_qty - qty_booking
+                booking_balances[mat_key] = max(0.0, balance - qty_booking)
+            else:
+                dispatch_qty = qty_val
+                qty_booking = min(dispatch_qty, balance) if balance > 0 else 0.0
+                qty_sale = dispatch_qty - qty_booking
+                booking_balances[mat_key] = max(0.0, balance - qty_booking)
 
             if is_alt and (ignore_flag or qty_booking <= 0):
                 return _fail_edit(
@@ -541,6 +579,14 @@ def edit_direct_sale(id):
             download_client_code=resolved_client_code,
             download_client_name=sale.client_name
         ))
+    except ValueError as ve:
+        # Booking/stock guard rails (e.g. "Not enough booked quantity …") carry
+        # an actionable message — show it instead of the generic failure text.
+        db.session.rollback()
+        logging.getLogger('sales').warning('Direct sale edit rejected: %s', ve)
+        flash(f'Sale not updated: {ve}', 'danger')
+        _stash_direct_sale_form_draft(request.form, mode='edit', sale_id=id)
+        return redirect(url_for('direct_sales_page', resume='edit', sale_id=id))
     except Exception:
         db.session.rollback()
         logging.getLogger('sales').exception('Direct sale edit failed')

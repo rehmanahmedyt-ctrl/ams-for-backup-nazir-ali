@@ -27,6 +27,12 @@ def add_direct_sale():
     rates = request.form.getlist('unit_rate[]')
     grn_item_ids = request.form.getlist('grn_item_id[]')
     ignore_items = request.form.getlist('ignore_booking_item[]')
+    # Optional per-row booking split (the edit sheet posts the booked part and
+    # the due excess separately, so the split the user sees is the split that is
+    # stored).  A row flagged `qty_is_due` posts its DUE qty in `qty[]` and its
+    # booking-covered qty in `booked_qty[]`.
+    booked_qtys = request.form.getlist('booked_qty[]')
+    qty_is_due_flags = request.form.getlist('qty_is_due[]')
     # amount = float(request.form.get('amount', 0) or 0) # Recalculated below
     paid_amount = _to_float_or_zero(request.form.get('paid_amount', 0))
     
@@ -242,7 +248,16 @@ def add_direct_sale():
         mat_name_in = str(mat or '').strip()
         mid = material_ids[idx] if idx < len(material_ids) else ''
         qty = _to_float_or_zero(qty_val)
-        if not mat_name_in and not str(mid or '').strip() and qty <= 0:
+        # Optional per-row booking split (see the form parsing above).
+        qty_is_due_row = False
+        if idx < len(qty_is_due_flags):
+            qty_is_due_row = str(qty_is_due_flags[idx] or '').strip().lower() in ['1', 'true', 'on', 'yes']
+        booking_hint = None
+        if idx < len(booked_qtys) and str(booked_qtys[idx] or '').strip() != '':
+            booking_hint = max(0.0, _to_float_or_zero(booked_qtys[idx]))
+        # A fully booking-covered row can post due qty 0 — it is not empty.
+        row_total_qty = qty + (booking_hint or 0.0) if qty_is_due_row else qty
+        if not mat_name_in and not str(mid or '').strip() and row_total_qty <= 0:
             continue
         try:
             mat_obj = resolve_transaction_material(
@@ -252,7 +267,7 @@ def add_direct_sale():
             )
         except ValueError as ve:
             return _fail_sale(str(ve))
-        if not mat_obj or qty <= 0:
+        if not mat_obj or row_total_qty <= 0:
             continue
         mat_name = mat_obj.name
         rate = _to_float_or_zero(rate_val)
@@ -284,7 +299,18 @@ def add_direct_sale():
             if not alt_obj:
                 return _fail_sale(MATERIAL_NOT_SELECTED_MSG)
 
-        if balance > 0:
+        # Booking split of this row: the booked part is deducted from the
+        # booking and ONLY the excess becomes due.  It can never claim more than
+        # the booking actually holds.
+        if not ignore_item and booking_hint is not None:
+            if qty_is_due_row:
+                qty = row_total_qty
+                qty_booking = min(booking_hint, qty, max(0.0, balance))
+            else:
+                qty_booking = min(qty, booking_hint, max(0.0, balance))
+            qty_sale = qty - qty_booking
+            booking_balances[mat_key] = max(0.0, balance - qty_booking)
+        elif balance > 0:
             qty_booking = min(qty, balance)
             qty_sale = qty - qty_booking
             booking_balances[mat_key] -= qty_booking

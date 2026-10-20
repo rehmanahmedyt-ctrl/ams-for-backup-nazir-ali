@@ -14,6 +14,8 @@ the ORM, so a regression fails here instead of corrupting live stock.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from models import (
@@ -195,43 +197,218 @@ def test_edit_round_trip_keeps_booked_and_due_orientation(seeded, app):
     assert after["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
 
 
-def test_one_row_everywhere_the_user_looks(seeded, app):
-    """The entered row must stay ONE row on every screen and on the bill.
+def _qty_text(value: float) -> str:
+    """The way the app prints quantities (no float dust, no trailing zeros)."""
+    num = round(float(value), 6)
+    if abs(num - round(num)) <= 1e-9:
+        return str(int(round(num)))
+    return f"{num:.6f}".rstrip("0").rstrip(".")
 
-    Save form row: Material = booked (Capital Steel), Alternate = ISM,
-    Qty = 797.8, Rate = 236 for the 41.8 excess.  The ledger splits that into
-    a rate-0 booked slice + a rate>0 due slice; that split must never surface
-    as a second line to the user.
+
+def _row(html: str, label: str) -> str:
+    """Whitespace-collapsed <td> that carries *label* (for display assertions)."""
+    for cell in re.findall(r"<td[^>]*>.*?</td>", html, re.S):
+        if label in re.sub(r"\s+", " ", cell):
+            return re.sub(r"\s+", " ", cell)
+    return ""
+
+
+def test_one_row_everywhere_the_user_looks(seeded, app):
+    """One row everywhere — and only the EXCESS over the booking is due.
+
+    Entered row: Material = booked (Capital Steel), Alternate = ISM,
+    Qty = 797.8 dispatched, Rate = 100 for the excess.  756 is deducted from
+    the booking; only the remaining 41.8 may ever show up (or be charged) as
+    due — never the full 797.8.
     """
     assert "Direct sale added successfully" in _post_sale(seeded).get_data(as_text=True)
     sale_id = _sale_state(app)["sale"]["id"]
     bill_no = "ST-BILL-1"
     expected_label = f"{ORIGINAL} &gt; ALT &gt; {ALTERNATE}"  # Jinja autoescaping
 
-    # 1. Direct Sales list: one material line, one qty line.
+    # 1. Direct Sales list: one material line; qty shown as the due excess.
     page = seeded.get("/direct_sales").get_data(as_text=True)
     assert page.count(expected_label) == 1
-    assert "756 booked + 41.8 due" in page
+    qty_cell = _row(page, 'data-label="Qty"')
+    assert "41.8" in qty_cell
+    assert "756 booked of 797.8 dispatched" in qty_cell
+    assert "797.8" not in qty_cell.split("booked of")[0]
 
-    # 2. Edit sheet: exactly one item row, carrying the entered values.
+    # 2. Edit sheet: one row, qty = the due excess, booked qty kept separately.
     modal = seeded.get(f"/direct_sales/{sale_id}/edit-modal").get_data(as_text=True)
     assert modal.count('class="compact-item-row') == 1
-    assert 'name="product_name[]"' in modal
     assert f'value="{ORIGINAL}"' in modal
     assert f'value="{ALTERNATE}"' in modal
-    assert f'value="{DELIVERED_QTY}"' in modal
+    assert f'name="qty[]" value="{_qty_text(DUE_QTY)}"' in modal
+    assert f'name="booked_qty[]" value="{_qty_text(BOOKED_QTY)}"' in modal
     assert f'value="{RATE}"' in modal
+    assert "756 of 797.8 already covered by booking" in modal
 
-    # 3. Bill: one line, amount = excess x rate, quantity = full dispatch.
+    # 3. Bill: one line charging the excess only (41.8 x rate), with the
+    #    booked part named in the line note.
     bill = seeded.get(f"/view_bill/{bill_no}").get_data(as_text=True)
     assert bill.count(expected_label) == 1
-    assert "756 booked + 41.8 due" in bill
+    bill_cell = _row(bill, expected_label)
+    assert "756 booked" in bill_cell and "797.8 dispatched" in bill_cell
+    nums = [c.strip() for c in re.findall(r'<td class="text-end">\s*([^<]*?)\s*</td>', bill)]
+    assert "41.8" in nums, nums
+    assert "797.8" not in nums, nums
     assert f"{DUE_QTY * RATE:,.2f}".rstrip('0').rstrip('.') in bill
+    assert f"{DELIVERED_QTY * RATE:,.2f}" not in bill
 
     # 4. Storage/ledger unchanged: still exact after the display collapse.
     state = _sale_state(app)
     assert state["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
     assert state["materials"][ALTERNATE] == pytest.approx(10_000 - DELIVERED_QTY)
+    assert state["materials"][ORIGINAL] == pytest.approx(10_000)
+    assert len(state["allocations"]) == 1
+    assert state["allocations"][0][2] == pytest.approx(BOOKED_QTY)
+
+
+def test_edit_sheet_save_keeps_booking_deduction_and_charges_excess_only(seeded, app):
+    """Saving the edit sheet must not turn the booked qty into due.
+
+    The sheet submits qty = 41.8 (due) + booked_qty = 756 (booking).  The
+    booking must still be consumed by exactly 756, the full 797.8 must still
+    leave stock, and only 41.8 may be charged — even when the client's
+    entry-derived booking balance looks consumed by another dispatch.
+    """
+    assert "Direct sale added successfully" in _post_sale(seeded).get_data(as_text=True)
+    sale_id = _sale_state(app)["sale"]["id"]
+
+    def _save(**overrides):
+        data = {
+            "client_code": "STEEL-1",
+            "category": "Mixed Transaction",
+            "driver_name": "Driver One",
+            "manual_bill_no": "ST-BILL-1",
+            "paid_amount": "0",
+            "discount": "0",
+            # exactly what the one-row edit sheet submits
+            "product_name[]": [ORIGINAL],
+            "alternate_material[]": [ALTERNATE],
+            "qty[]": [_qty_text(DUE_QTY)],
+            "booked_qty[]": [_qty_text(BOOKED_QTY)],
+            "qty_is_due[]": ["1"],
+            "unit_rate[]": [str(RATE)],
+            "ignore_booking_item[]": ["0"],
+        }
+        data.update(overrides)
+        resp = seeded.post(f"/edit_bill/DirectSale/{sale_id}", data=data, follow_redirects=True)
+        assert "Direct sale updated and resynced" in resp.get_data(as_text=True), _flash(resp.get_data(as_text=True))
+
+    _save()
+    state = _sale_state(app)
+    assert state["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
+    assert [(n, round(q, 3), round(r, 2)) for n, q, r in state["sale"]["items"]] == [
+        (ALTERNATE, BOOKED_QTY, 0.0),
+        (ALTERNATE, round(DUE_QTY, 3), RATE),
+    ]
+    assert len(state["allocations"]) == 1
+    assert state["allocations"][0][2] == pytest.approx(BOOKED_QTY)
+    assert state["materials"][ALTERNATE] == pytest.approx(10_000 - DELIVERED_QTY)
+    assert state["materials"][ORIGINAL] == pytest.approx(10_000)
+
+    # The sheet still shows one row with the excess as the qty.
+    modal = seeded.get(f"/direct_sales/{sale_id}/edit-modal").get_data(as_text=True)
+    assert modal.count('class="compact-item-row') == 1
+    assert f'name="qty[]" value="{_qty_text(DUE_QTY)}"' in modal
+    assert f'name="booked_qty[]" value="{_qty_text(BOOKED_QTY)}"' in modal
+
+
+def test_booking_consumed_elsewhere_does_not_make_booked_qty_due(seeded, app):
+    """A second dispatch of the same booked material must not re-charge row 1.
+
+    The entry-derived booking balance drops to 0 once another delivery consumes
+    the pool; the sale's own booked qty stays booked (756 deducted from the
+    booking, 41.8 due) instead of the whole 797.8 turning into due.
+    """
+    assert "Direct sale added successfully" in _post_sale(seeded).get_data(as_text=True)
+    sale_id = _sale_state(app)["sale"]["id"]
+
+    # Another booking delivery consumes the whole remaining booking pool.
+    with app.app_context():
+        from models import Booking, BookingItem, db
+        second = Booking(client_name="Steel Client", amount=BOOKED_QTY * RATE)
+        db.session.add(second)
+        db.session.flush()
+        db.session.add(BookingItem(
+            booking_id=second.id, material_name=ORIGINAL, qty=BOOKED_QTY, price_at_time=RATE
+        ))
+        db.session.commit()
+
+    resp = seeded.post("/edit_bill/DirectSale/%d" % sale_id, data={
+        "client_code": "STEEL-1",
+        "category": "Mixed Transaction",
+        "driver_name": "Driver One",
+        "manual_bill_no": "ST-BILL-1",
+        "paid_amount": "0",
+        "discount": "0",
+        "product_name[]": [ORIGINAL],
+        "alternate_material[]": [ALTERNATE],
+        "qty[]": [_qty_text(DUE_QTY)],
+        "booked_qty[]": [_qty_text(BOOKED_QTY)],
+        "qty_is_due[]": ["1"],
+        "unit_rate[]": [str(RATE)],
+        "ignore_booking_item[]": ["0"],
+    }, follow_redirects=True)
+    assert "Direct sale updated and resynced" in resp.get_data(as_text=True), _flash(resp.get_data(as_text=True))
+
+    state = _sale_state(app)
+    assert state["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
+    assert [(n, round(q, 3), round(r, 2)) for n, q, r in state["sale"]["items"]] == [
+        (ALTERNATE, BOOKED_QTY, 0.0),
+        (ALTERNATE, round(DUE_QTY, 3), RATE),
+    ]
+    assert len(state["allocations"]) == 1
+    assert state["allocations"][0][2] == pytest.approx(BOOKED_QTY)
+
+
+def test_fully_booked_row_on_the_edit_sheet_is_not_doubled(seeded, app):
+    """A row fully covered by the booking posts due qty 0 + booked qty.
+
+    The sheet must not read that as 0 + 756 + 756 of dispatch, and none of it
+    may become due.
+    """
+    resp = _post_sale(seeded, **{
+        "qty[]": str(BOOKED_QTY),
+        "unit_rate[]": "0",
+        "category": "Booking Delivery",
+        "manual_bill_no": "ST-BILL-2",
+    })
+    assert "Direct sale added successfully" in resp.get_data(as_text=True), _flash(resp.get_data(as_text=True))
+    sale_id = _sale_state(app)["sale"]["id"]
+
+    modal = seeded.get(f"/direct_sales/{sale_id}/edit-modal").get_data(as_text=True)
+    assert modal.count('class="compact-item-row') == 1
+    assert f'name="qty[]" value="0"' in modal
+    assert f'name="booked_qty[]" value="{_qty_text(BOOKED_QTY)}" in modal'
+
+    resp = seeded.post(f"/edit_bill/DirectSale/{sale_id}", data={
+        "client_code": "STEEL-1",
+        "category": "Booking Delivery",
+        "driver_name": "Driver One",
+        "manual_bill_no": "ST-BILL-2",
+        "paid_amount": "0",
+        "discount": "0",
+        "product_name[]": [ORIGINAL],
+        "alternate_material[]": [ALTERNATE],
+        "qty[]": ["0"],
+        "booked_qty[]": [_qty_text(BOOKED_QTY)],
+        "qty_is_due[]": ["1"],
+        "unit_rate[]": ["0"],
+        "ignore_booking_item[]": ["0"],
+    }, follow_redirects=True)
+    assert "Direct sale updated and resynced" in resp.get_data(as_text=True), _flash(resp.get_data(as_text=True))
+
+    state = _sale_state(app)
+    assert state["sale"]["amount"] == pytest.approx(0)
+    assert [(n, round(q, 3), round(r, 2)) for n, q, r in state["sale"]["items"]] == [
+        (ALTERNATE, BOOKED_QTY, 0.0),
+    ]
+    assert len(state["allocations"]) == 1
+    assert state["allocations"][0][2] == pytest.approx(BOOKED_QTY)
+    assert state["materials"][ALTERNATE] == pytest.approx(10_000 - BOOKED_QTY)
     assert state["materials"][ORIGINAL] == pytest.approx(10_000)
 
 

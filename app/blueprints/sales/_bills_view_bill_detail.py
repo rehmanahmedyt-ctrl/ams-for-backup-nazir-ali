@@ -28,18 +28,7 @@ def view_bill_detail(type, id):
             entry_map.setdefault(key, []).append(e)
 
         # Collapse the internal booked/due split into one line per entered row.
-        items = [
-            {
-                'name': row['name'],
-                'qty': row['qty'],
-                'price_at_time': row['rate'],
-                'amount': row['amount'],
-                'note': row['note'],
-                'booked_qty': row['booked_qty'],
-                'due_qty': row['due_qty'],
-            }
-            for row in _direct_sale_display_items(bill)
-        ]
+        items = _direct_sale_bill_lines(_direct_sale_display_items(bill))
     elif type == 'MaterialReturn':
         bill = MaterialReturn.query.get_or_404(id)
         items = bill.items

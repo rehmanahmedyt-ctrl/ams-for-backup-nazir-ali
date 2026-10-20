@@ -157,18 +157,7 @@ def download_invoice(bill_no):
             entry_map.setdefault(key, []).append(e)
 
         # Collapse the internal booked/due split into one line per entered row.
-        items = [
-            {
-                'name': row['name'],
-                'qty': row['qty'],
-                'price_at_time': row['rate'],
-                'amount': row['amount'],
-                'note': row['note'],
-                'booked_qty': row['booked_qty'],
-                'due_qty': row['due_qty'],
-            }
-            for row in _direct_sale_display_items(sale)
-        ]
+        items = _direct_sale_bill_lines(_direct_sale_display_items(sale))
 
         if not (sale.driver_name or '').strip():
             inferred_driver = _infer_driver_name_from_refs(_direct_sale_bill_refs(sale))
@@ -267,18 +256,7 @@ def download_invoice(bill_no):
         elif getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
             ds = invoice.direct_sales[0]
             # Preserve item rates so line amount matches invoice totals on first-open.
-            items = [
-                {
-                    'name': row['name'],
-                    'qty': row['qty'],
-                    'price_at_time': row['rate'],
-                    'amount': row['amount'],
-                    'note': row['note'],
-                    'booked_qty': row['booked_qty'],
-                    'due_qty': row['due_qty'],
-                }
-                for row in _direct_sale_display_items(ds)
-            ]
+            items = _direct_sale_bill_lines(_direct_sale_display_items(ds))
     elif grn:
         bill_obj = grn
         bill_type = 'GRN'

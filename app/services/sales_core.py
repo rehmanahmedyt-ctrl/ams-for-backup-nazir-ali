@@ -871,10 +871,12 @@ def _direct_sale_display_items(sale, booked_by_item=None):
     for, so every screen and every bill collapses it back into ONE row:
 
     * ``qty``          total physical dispatch (booked + due),
-    * ``booked_qty``   the part covered by the booking,
-    * ``due_qty``      the chargeable excess,
+    * ``booked_qty``   the part covered by the booking (deducted from booking),
+    * ``due_qty``      the chargeable excess — the ONLY part that is due,
+    * ``bill_qty``     the quantity a bill/invoice line must charge for
+                      (``due_qty`` on a mixed row, never the full dispatch),
     * ``rate``         the rate entered for the excess,
-    * ``amount``       what is actually charged for the row.
+    * ``amount``       what is actually charged for the row (excess x rate).
     """
     if not sale:
         return []
@@ -906,6 +908,7 @@ def _direct_sale_display_items(sale, booked_by_item=None):
             'qty': float(qty),
             'booked_qty': float(qty) if free_portion else 0.0,
             'due_qty': 0.0 if free_portion else float(qty),
+            'bill_qty': 0.0 if free_portion else float(qty),
             'rate': float(rate or 0),
             'amount': 0.0 if free_portion else float(qty) * float(rate or 0),
             'grn_item_id': item.grn_item_id,
@@ -969,20 +972,81 @@ def _direct_sale_display_items(sale, booked_by_item=None):
         group['is_booked_row'] = bool(group['booked_qty']) and group['due_qty'] <= 0
         group['is_due_row'] = group['due_qty'] > 0
         group['is_mixed_row'] = bool(group['booked_qty']) and group['due_qty'] > 0
+        # A bill/invoice line charges ONLY the excess.  The booked part was
+        # already paid for through the booking, so printing the full dispatch
+        # quantity against the rate reads as "the whole qty is due".
+        group['bill_qty'] = group['due_qty'] if group['is_mixed_row'] else group['qty']
+        group['qty_text'] = _qty_text(group['qty'])
+        group['booked_qty_text'] = _qty_text(group['booked_qty'])
+        group['due_qty_text'] = _qty_text(group['due_qty'])
+        group['bill_qty_text'] = _qty_text(group['bill_qty'])
         group['note'] = ''
+        group['note_detail'] = ''
+        group['bill_note'] = ''
+        group['split_note'] = ''
         if group['is_mixed_row']:
-            group['note'] = (
-                f"{_fmt_qty_for_note(group['booked_qty'])} booked + "
-                f"{_fmt_qty_for_note(group['due_qty'])} due"
+            booked_txt = _fmt_qty_for_note(group['booked_qty'])
+            due_txt = _fmt_qty_for_note(group['due_qty'])
+            total_txt = _fmt_qty_for_note(group['qty'])
+            group['note'] = f"{booked_txt} booked + {due_txt} due"
+            group['note_detail'] = (
+                f"{booked_txt} booked (dispatch {total_txt}) — only "
+                f"{due_txt} excess is due"
+            )
+            group['bill_note'] = f"{booked_txt} booked — {total_txt} dispatched"
+            group['split_note'] = (
+                f"{booked_txt} of {total_txt} already covered by booking — "
+                f"only the {due_txt} excess is charged"
             )
         elif group['is_booked_row']:
             group['note'] = 'Booked'
+            group['note_detail'] = 'Booked'
+            group['bill_note'] = 'Booked'
+            group['split_note'] = (
+                f"fully covered by booking ({_fmt_qty_for_note(group['booked_qty'])}) — nothing is due"
+            )
     return groups
+
+
+def _direct_sale_bill_lines(rows):
+    """Bill/invoice payload for already-collapsed display rows.
+
+    The quantity printed on a bill is the **chargeable** quantity: on a
+    booked + excess row that is the excess only, because the booked quantity
+    was settled with the booking and must never show up as due again.  The
+    booked part stays visible in the line note so the customer can still see
+    what physically left the yard.
+    """
+    return [
+        {
+            'name': row['name'],
+            'qty': row.get('bill_qty', row['qty']),
+            'price_at_time': row['rate'],
+            'amount': row['amount'],
+            'note': row.get('bill_note') or row.get('note') or '',
+            'booked_qty': row['booked_qty'],
+            'due_qty': row['due_qty'],
+            'dispatch_qty': row['qty'],
+        }
+        for row in (rows or [])
+    ]
+
+
+def _qty_text(value):
+    """Human qty without float dust (797.8 - 756 -> '41.8', not '41.7999999…')."""
+    try:
+        num = float(value or 0)
+    except (TypeError, ValueError):
+        return '0'
+    num = round(num, 6)
+    if abs(num - round(num)) <= 1e-9:
+        return str(int(round(num)))
+    return f"{num:.6f}".rstrip('0').rstrip('.')
 
 
 def _fmt_qty_for_note(value):
     try:
-        num = float(value or 0)
+        num = round(float(value or 0), 6)
     except (TypeError, ValueError):
         return '0'
     if abs(num - round(num)) <= 1e-9:

@@ -437,7 +437,8 @@
                     <td class="text-end fw-bold" data-label="Qty">
                         {% if sale_rows %}
                             {% for it in sale_rows %}
-                            <div>{{ it.qty }}{% if it.is_mixed_row %}<small class="d-block text-white-50" style="font-size:0.7rem;">{{ it.note }}</small>{% endif %}</div>
+                            {# Only the excess over the booking is due; the booked qty is a dispatch detail. #}
+                            <div>{{ it.bill_qty_text if it.is_mixed_row else it.qty_text }}{% if it.is_mixed_row %} <span class="badge bg-info text-dark" style="font-size:0.6rem;">DUE</span><small class="d-block text-white-50" style="font-size:0.7rem;">{{ it.booked_qty_text }} booked of {{ it.qty_text }} dispatched</small>{% endif %}</div>
                             {% endfor %}
                         {% elif sale.items %}
                             {% for it in sale.items %}
@@ -1898,6 +1899,14 @@ function checkItemBookingStatus(row) {
     // Check if material is booked for this client
     const balance = toNum(currentClientBookings[matKey]);
     const currentQty = toNum(qtyInputEl.value);
+    // On the edit sheet a booked + excess row keeps its DUE (excess) qty in the
+    // qty box and its booking-covered qty in a hidden field; dispatch is the two
+    // added together.  Rows without that flag post the dispatch qty directly.
+    const bookedQtyEl = row.querySelector('.booked-qty-input');
+    const dueOnlyEl = row.querySelector('.qty-is-due-flag');
+    const bookedQty = bookedQtyEl ? toNum(bookedQtyEl.value) : 0;
+    const qtyIsDueOnly = bookedQty > 0 && !!dueOnlyEl && dueOnlyEl.value === '1';
+    const dispatchQty = qtyIsDueOnly ? (currentQty + bookedQty) : currentQty;
 
     if (ignoreHidden) ignoreHidden.value = ignoreBooking ? '1' : '0';
     if (ignoreBooking) {
@@ -1914,8 +1923,13 @@ function checkItemBookingStatus(row) {
         return;
     }
     
-    if (balance > 0) {
-        if (currentQty <= balance) {
+    // Booking-covered qty of this row: what the edit sheet declared, otherwise
+    // whatever the client's booking balance still covers.
+    const coveredNow = bookedQty > 0 ? Math.min(bookedQty, dispatchQty) : Math.min(Math.max(0, balance), dispatchQty);
+    const excessQty = Math.max(0, dispatchQty - coveredNow);
+
+    if (balance > 0 || bookedQty > 0) {
+        if (excessQty <= 0) {
             // Fully covered by booking — keep booked unit price visible, do not ask for a new rate
             if (bookingRate > 0) rateInput.value = formatPrecisionInput(bookingRate);
             rateInput.readOnly = true;
@@ -1931,27 +1945,26 @@ function checkItemBookingStatus(row) {
                 reservedBadge.style.display = 'block';
             }
             if (statusBadge) {
-                const remaining = Math.max(0, balance - currentQty);
+                const remaining = Math.max(0, balance - coveredNow);
                 statusBadge.innerHTML = `
                     <span class="badge bg-warning text-dark" style="font-size: 0.65rem;">
                         <i class="bi bi-bookmark-check me-1"></i>
-                        BOOKED | Bal: ${formatPrecisionInput(balance)} | Dispatch: ${formatPrecisionInput(currentQty)} | Remaining: ${formatPrecisionInput(remaining)}
+                        BOOKED | Bal: ${formatPrecisionInput(balance)} | Dispatch: ${formatPrecisionInput(dispatchQty)} | Remaining: ${formatPrecisionInput(remaining)}
                     </span>`;
             }
         } else {
             // Mixed (Partially booked, part sale)
-            // Enable price editing for the excess portion
+            // Enable price editing for the excess portion only
             if (rateInput.readOnly) rateInput.readOnly = false;
             rateInput.disabled = false;
             rateInput.classList.remove('text-muted', 'bg-secondary', 'bg-opacity-10');
             if (rateCell) rateCell.classList.remove('reserved-only');
             if (reservedBadge) reservedBadge.style.display = 'none';
-            rateInput.title = "Enter price for the " + formatPrecisionInput(currentQty - balance) + " non-booked items (Excess)";
+            rateInput.title = "Enter price for the " + formatPrecisionInput(excessQty) + " non-booked items (Excess)";
             if (statusBadge) {
-                const excess = Math.max(0, currentQty - balance);
                 statusBadge.innerHTML = `
                     <span class="badge bg-info text-dark" style="font-size: 0.65rem;">
-                        MIXED | Bal: ${formatPrecisionInput(balance)} | Dispatch: ${formatPrecisionInput(currentQty)} | Remaining: 0 | Excess: ${formatPrecisionInput(excess)}
+                        MIXED | Booked: ${formatPrecisionInput(coveredNow)} | Dispatch: ${formatPrecisionInput(dispatchQty)} | Excess due: ${formatPrecisionInput(excessQty)}
                     </span>`;
             }
         }
@@ -1966,7 +1979,7 @@ function checkItemBookingStatus(row) {
         if (reservedBadge) reservedBadge.style.display = 'none';
         rateInput.title = "Enter price for non-booked item";
         if (statusBadge) {
-            statusBadge.innerHTML = `<span class="badge bg-info text-dark" style="font-size: 0.65rem;">NON-BOOKED | Dispatch: ${formatPrecisionInput(currentQty)}</span>`;
+            statusBadge.innerHTML = `<span class="badge bg-info text-dark" style="font-size: 0.65rem;">NON-BOOKED | Dispatch: ${formatPrecisionInput(dispatchQty)}</span>`;
         }
     }
     updateSalePrice(form);
@@ -2040,6 +2053,20 @@ function updateSalePrice(form, source) {
         let balance = ignoreRow ? 0 : toNum(tempBalances[matKey]);
         let chargeableQty = qty;
         let coveredQty = 0;
+
+        // Edit sheet rows flag when the qty box holds the due (excess) qty only
+        // and carry their booking-covered qty in a hidden field, so the booked
+        // part is never charged again here.
+        const bookedQtyInput = row.querySelector('.booked-qty-input');
+        const dueOnlyInput = row.querySelector('.qty-is-due-flag');
+        const rowBookedQty = (!ignoreRow && bookedQtyInput && dueOnlyInput && dueOnlyInput.value === '1')
+            ? Math.max(0, toNum(bookedQtyInput.value)) : 0;
+        if (rowBookedQty > 0) {
+            chargeableQty = qty;              // qty already IS the excess (due)
+            coveredQty = rowBookedQty;
+            tempBalances[matKey] = Math.max(0, balance - rowBookedQty);
+            balance = toNum(tempBalances[matKey]);
+        }
 
         if (balance > 0) {
             if (qty <= balance) {
@@ -2530,12 +2557,20 @@ function validateSaleFormBeforeSubmit(form) {
             issues.push(`Row ${idx + 1}: Select a valid material from list.`);
             return;
         }
-        if (!(qty > 0)) {
+        // Edit-sheet rows flag when their qty box holds the due excess only and
+        // carry the booking-covered qty in a hidden field.  A fully booked row
+        // legitimately posts due qty 0.
+        const rowBookedQtyEl = row.querySelector('.booked-qty-input');
+        const rowDueOnlyEl = row.querySelector('.qty-is-due-flag');
+        const rowBookedQty = (rowBookedQtyEl && rowDueOnlyEl && rowDueOnlyEl.value === '1')
+            ? Math.max(0, toNum(rowBookedQtyEl.value)) : 0;
+        if (!(qty > 0) && !(rowBookedQty > 0)) {
             issues.push(`Row ${idx + 1}: Qty must be greater than 0.`);
             return;
         }
         validRows += 1;
-        totalMaterialQty += qty;
+        const dispatchQty = qty + rowBookedQty;
+        totalMaterialQty += dispatchQty;
         const alt = (row.querySelector('[name="alternate_material[]"]')?.value || '').trim();
         const altMatIdInput = row.querySelector('.alt-material-id-input');
         const altMatId = (altMatIdInput && altMatIdInput.value) ? altMatIdInput.value.trim() : '';
@@ -2546,12 +2581,17 @@ function validateSaleFormBeforeSubmit(form) {
         const ignoreBooking = !!(row.querySelector('.ignore-booking-item') && row.querySelector('.ignore-booking-item').checked);
         const matKey = materialKey(product);
         let bal = ignoreBooking ? 0 : toNum(tempBalances[matKey]);
-        let covered = 0;
+        // Booking-covered qty of this row: declared by the row (edit sheet keeps
+        // it in a hidden field), otherwise taken from the client's balance.
+        let covered = ignoreBooking ? 0 : Math.min(Math.max(0, rowBookedQty), dispatchQty);
+        bal = Math.max(0, bal - covered);
         if (bal > 0) {
-            covered = Math.min(qty, bal);
-            tempBalances[matKey] = bal - covered;
+            const extraCovered = Math.min(dispatchQty - covered, bal);
+            covered += extraCovered;
+            bal -= extraCovered;
         }
-        const chargeableQty = Math.max(0, qty - covered);
+        tempBalances[matKey] = bal;
+        const chargeableQty = Math.max(0, dispatchQty - covered);
         // Booked qty is already priced on the booking — only leftover (sale) qty needs a rate
         if (chargeableQty > 0 && !(rate > 0) && category !== 'Booking Delivery') {
             issues.push(`Row ${idx + 1}: Rate is required for the non-booked qty (${formatPrecisionInput(chargeableQty)}). Booked qty does not need a new rate.`);

@@ -216,18 +216,7 @@ def view_bill(bill_no):
 
         # One bill line per row the user entered.  The stored booked/due split
         # must never print as two extra lines on the customer's bill.
-        bill_items = [
-            {
-                'name': row['name'],
-                'qty': row['qty'],
-                'price_at_time': row['rate'],
-                'amount': row['amount'],
-                'note': row['note'],
-                'booked_qty': row['booked_qty'],
-                'due_qty': row['due_qty'],
-            }
-            for row in _direct_sale_display_items(sale)
-        ]
+        bill_items = _direct_sale_bill_lines(_direct_sale_display_items(sale))
 
         tx_code, tx_label, tx_note = _resolve_transaction_type('DirectSale', sale, entry_hint_id=entry_hint_id)
         return render_template('view_bill.html', bill=sale, type='DirectSale', items=bill_items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, direct_sale_rent_reconciliation=direct_sale_rent_reconciliation, delivery_people=delivery_people, pk_now=pk_now)
@@ -282,18 +271,7 @@ def view_bill(bill_no):
                 collapsed.extend(_direct_sale_display_items(ds))
             collapsed_total = sum(float(row['amount'] or 0) for row in collapsed)
             if collapsed and abs(collapsed_total - float(invoice.total_amount or 0)) <= 0.01:
-                items = [
-                    {
-                        'name': row['name'],
-                        'qty': row['qty'],
-                        'price_at_time': row['rate'],
-                        'amount': row['amount'],
-                        'note': row['note'],
-                        'booked_qty': row['booked_qty'],
-                        'due_qty': row['due_qty'],
-                    }
-                    for row in collapsed
-                ]
+                items = _direct_sale_bill_lines(collapsed)
         if not items and getattr(invoice, 'entries', None) and invoice.entries:
             entry_total_qty = sum(float(e.qty or 0) for e in invoice.entries)
             inferred_rate = (float(invoice.total_amount or 0) / entry_total_qty) if entry_total_qty > 0 else 0
@@ -310,18 +288,7 @@ def view_bill(bill_no):
         elif not items and getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
             ds = invoice.direct_sales[0]
             # Preserve item rates so line amount matches invoice totals on first-open.
-            items = [
-                {
-                    'name': row['name'],
-                    'qty': row['qty'],
-                    'price_at_time': row['rate'],
-                    'amount': row['amount'],
-                    'note': row['note'],
-                    'booked_qty': row['booked_qty'],
-                    'due_qty': row['due_qty'],
-                }
-                for row in _direct_sale_display_items(ds)
-            ]
+            items = _direct_sale_bill_lines(_direct_sale_display_items(ds))
         tx_code, tx_label, tx_note = _resolve_transaction_type('Invoice', invoice, entry_hint_id=entry_hint_id)
         return render_template('view_bill.html', bill=invoice, type='Invoice', items=items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, delivery_people=delivery_people, pk_now=pk_now)
     if grn:
