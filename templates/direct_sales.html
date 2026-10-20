@@ -423,7 +423,7 @@
                     <td data-label="Material">
                         {% if sale.items %}
                             {% for it in sale.items %}
-                            <div class="small">{{ it.product_name }}{% if it.alternate_material %} <span class="text-white-50">/ {{ it.alternate_material }}</span>{% endif %}</div>
+                            <div class="small">{{ it.product_name }}{% if it.alternate_material %} <span class="text-white-50">/ {{ it.alternate_material }}</span>{% endif %}{% if sale.category == 'Mixed Transaction' %} {% if (it.price_at_time or 0) <= 0 %}<span class="badge bg-warning text-dark">Booked</span>{% else %}<span class="badge bg-info text-dark">Due</span>{% endif %}{% endif %}</div>
                             {% endfor %}
                         {% else %}
                             -

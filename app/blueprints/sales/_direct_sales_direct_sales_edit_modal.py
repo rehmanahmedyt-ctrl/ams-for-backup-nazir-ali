@@ -49,10 +49,29 @@ def direct_sale_edit_modal(sale_id):
         if (row.name or '').strip().casefold() == (sale.client_name or '').strip().casefold()
     ), None)
 
-    # Surface the original booked material for each existing sale line so that
-    # the edit modal can pre-fill the "Alternate" field.  Without this, an
-    # alternate-material dispatch (e.g. delivered KOHAT against RENT-CEMENT
-    # booking) loses its booking identity in the UI and on save.
+    # The add form treats the Material column as the *booked* material and the
+    # Alternate column as what was physically delivered.  The edit modal must
+    # pre-fill in the same orientation or a no-op edit inverts the booking
+    # (delivered material becomes the booked one, and the row is rejected with
+    # "no booking balance").  BookingAllocation gives the exact per-line source;
+    # the old entry scan is kept as a fallback for legacy lines.
+    booked_by_sale_item = {}
+    sale_item_ids = [it.id for it in (sale.items or []) if it.id]
+    if sale_item_ids:
+        alloc_rows = db.session.query(
+            BookingAllocation.sale_item_id,
+            BookingItem.material_name,
+        ).join(
+            BookingItem, BookingAllocation.booking_item_id == BookingItem.id
+        ).filter(
+            BookingAllocation.sale_item_id.in_(sale_item_ids),
+            BookingAllocation.is_void == False,
+        ).order_by(BookingAllocation.id.asc()).all()
+        for sale_item_id, material_name in alloc_rows:
+            name = (material_name or '').strip()
+            if name and sale_item_id not in booked_by_sale_item:
+                booked_by_sale_item[sale_item_id] = name
+
     refs = _direct_sale_bill_refs(sale)
     old_entries = Entry.query.filter(
         Entry.bill_no.in_(refs),
@@ -66,6 +85,16 @@ def direct_sale_edit_modal(sale_id):
         if delivered and booked and booked != delivered:
             alt_by_delivered[delivered] = booked
 
+    # Legacy fallback: match a rate-0 line to the entry it produced.
+    for it in (sale.items or []):
+        if it.id in booked_by_sale_item:
+            continue
+        if float(it.price_at_time or 0) > 0:
+            continue
+        booked = alt_by_delivered.get((it.product_name or '').strip())
+        if booked:
+            booked_by_sale_item[it.id] = booked
+
     return render_template(
         '_direct_sale_edit_modal.html',
         sale=sale,
@@ -77,5 +106,5 @@ def direct_sale_edit_modal(sale_id):
         delivery_allocations_by_sale={sale.id: delivery_allocations},
         delivery_rent_totals_by_sale={sale.id: rent_total},
         sale_client_code_by_id={sale.id: matched_client.code if matched_client else sale.client_code},
-        sale_alt_material_by_product=alt_by_delivered,
+        sale_booked_material_by_item=booked_by_sale_item,
     )

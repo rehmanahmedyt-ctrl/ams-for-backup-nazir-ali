@@ -305,10 +305,17 @@ def add_direct_sale():
             })
 
         if qty_sale > 0:
+            # Everything above the booked quantity leaves stock as the material
+            # that is physically dispatched.  When an alternate material was
+            # chosen, the excess is a due sale OF THE ALTERNATE — never of the
+            # booked material (that used to under-stock the alternate and post a
+            # phantom negative movement on the original booked item).
+            delivered_obj = alt_obj if alt_obj else mat_obj
+            excess_mat_name = delivered_obj.name if delivered_obj else mat_name
             if rate <= 0:
-                rate = float(mat_obj.unit_price or 0)
+                rate = float(getattr(delivered_obj, 'unit_price', 0) or 0)
             if rate <= 0:
-                missing_rate_non_booked.append(mat_name)
+                missing_rate_non_booked.append(excess_mat_name)
             grn_item_id = None
             if idx < len(grn_item_ids) and grn_item_ids[idx]:
                 try:
@@ -316,7 +323,7 @@ def add_direct_sale():
                 except (ValueError, TypeError):
                     grn_item_id = None
             processed_items.append({
-                'product_name': mat_name,
+                'product_name': excess_mat_name,
                 'booked_material': None,
                 'qty': qty_sale,
                 'price_at_time': rate,
@@ -339,30 +346,26 @@ def add_direct_sale():
         mats = ', '.join(sorted(set(missing_rate_non_booked)))
         return _fail_sale(f'Rate is required for non-booked items: {mats}')
 
-    # 3. Stock Validation (Only for non-booked items)
-    # Aggregate required quantities first to prevent cumulative overrun
-    required_stock = {}
-    required_alt_stock = {}
+    # 3. Stock Validation (physical dispatch only)
+    # Aggregate required quantities first to prevent cumulative overrun.
+    # Every line — booked or not — removes the *delivered* material from stock,
+    # so booked alternate dispatches are checked against the alternate material.
+    dispatch_required = {}
+    dispatch_has_alt = {}
     for item in processed_items:
-        if not item['is_booking']:
-            mat = item['product_name']
-            required_stock[mat] = required_stock.get(mat, 0) + item['qty']
-        elif item.get('is_alternate'):
-            mat = item.get('booked_material') or item['product_name']
-            required_alt_stock[mat] = required_alt_stock.get(mat, 0) + item['qty']
+        if item['is_booking'] and not item.get('is_alternate'):
+            continue
+        mat = item['product_name']
+        dispatch_required[mat] = dispatch_required.get(mat, 0) + item['qty']
+        dispatch_has_alt[mat] = bool(dispatch_has_alt.get(mat)) or bool(item.get('is_alternate'))
 
-    for mat, req_qty in required_stock.items():
+    for mat, req_qty in dispatch_required.items():
         mat_obj = Material.query.filter_by(name=mat).first()
         if mat_obj:
             available = mat_obj.total or 0
             if not allow_negative_stock and not global_negative_stock_allowed and available < req_qty:
-                raise ValueError(f"Insufficient stock for {mat}. Available: {available}, Required: {req_qty} (Non-booked). Enable 'Allow Negative Stock' or global setting to bypass.")
-    for mat, req_qty in required_alt_stock.items():
-        mat_obj = Material.query.filter_by(name=mat).first()
-        if mat_obj:
-            available = mat_obj.total or 0
-            if not allow_negative_stock and not global_negative_stock_allowed and available < req_qty:
-                raise ValueError(f"Insufficient stock for {mat}. Available: {available}, Required: {req_qty} (Alternate booking from original). Enable 'Allow Negative Stock' or global setting to bypass.")
+                label = 'Alternate booking dispatch' if dispatch_has_alt.get(mat) else 'Non-booked'
+                raise ValueError(f"Insufficient stock for {mat}. Available: {available}, Required: {req_qty} ({label}). Enable 'Allow Negative Stock' or global setting to bypass.")
 
     total_qty = sum(_to_float_or_zero(item.get('qty')) for item in processed_items)
     if delivery_allocations and delivery_bags_total > (total_qty + 0.0001):
