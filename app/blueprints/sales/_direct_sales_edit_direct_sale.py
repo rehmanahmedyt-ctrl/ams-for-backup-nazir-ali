@@ -298,11 +298,10 @@ def edit_direct_sale(id):
             delivered_name = alt_obj.name if alt_obj else mat_obj.name
             is_alt = bool(alt_obj and delivered_name != mat_obj.name)
 
-            if is_alt and rate_val > 0:
-                return _fail_edit('Alternate material is only allowed for booked items (rate 0).')
-
-            # Default whole-row chargeable slice (used for pure cash/credit and
-            # for any posted excess after the reserved slice is taken).
+            # Split the row: the booked quantity is a rate-0 reservation
+            # fulfilment, the remainder is a real chargeable sale.  Both
+            # dispatch the DELIVERED material — an alternate booking must never
+            # post the excess against the original booked material.
             qty_booking = 0.0
             qty_sale = qty_val
             mat_key = _material_norm_key(mat_obj.name)
@@ -329,13 +328,12 @@ def edit_direct_sale(id):
                 })
 
             if qty_sale > 0:
-                # For a pure booked (rate 0) row with no booking balance left
-                # there is nothing to charge.
+                # Chargeable excess leaves as the same delivered material.
                 effective_rate = rate_val
                 if effective_rate <= 0:
-                    effective_rate = float(mat_obj.unit_price or 0)
+                    effective_rate = float((alt_obj if is_alt else mat_obj).unit_price or 0)
                 parsed_items.append({
-                    'product_name': mat_obj.name,
+                    'product_name': delivered_name,
                     'booked_material': None,
                     'qty': qty_sale,
                     'price_at_time': effective_rate,
