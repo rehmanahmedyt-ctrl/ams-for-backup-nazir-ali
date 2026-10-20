@@ -224,8 +224,13 @@ def direct_sales_page():
     resume_mode = (request.args.get('resume') or '').strip().lower()
     hold_drafts = DirectSaleDraft.query.order_by(DirectSaleDraft.updated_at.desc()).limit(200).all()
 
+    # One display row per row the user actually entered: the stored
+    # booked/due split is a ledger detail, never a second line in the list.
+    display_items_by_sale = _direct_sale_display_items_map(sales)
+
     return render_template('direct_sales.html',
                            sales=sales,
+                           display_items_by_sale=display_items_by_sale,
                            materials=materials,
                            clients=clients,
                            grns=grns,

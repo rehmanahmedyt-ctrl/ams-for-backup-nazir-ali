@@ -453,11 +453,15 @@
             </thead>
             <tbody>
                 {% for item in items %}
+                {% set line_amount = item.amount if (item.amount is defined and item.amount is not none) else ((item.qty or 0) * (item.price_at_time or 0)) %}
                 <tr>
-                    <td class="text-start fw-bold">{{ item.name or item.material_name or item.product_name or item.mat_name }}</td>
+                    <td class="text-start fw-bold">
+                        {{ item.name or item.material_name or item.product_name or item.mat_name }}
+                        {% if item.note is defined and item.note %}<div class="text-white-50" style="font-size:0.72rem;font-weight:500;">{{ item.note }}</div>{% endif %}
+                    </td>
                     <td class="text-end">{{ fmt_num(item.qty) }}</td>
                     <td class="text-end">{{ fmt_num(item.price_at_time) }}</td>
-                    <td class="text-end">{{ fmt_num((item.qty or 0) * (item.price_at_time or 0)) }}</td>
+                    <td class="text-end">{{ fmt_num(line_amount) }}</td>
                 </tr>
                 {% endfor %}
                 {% if not items and type == 'Payment' %}

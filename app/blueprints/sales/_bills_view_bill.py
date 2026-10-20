@@ -214,18 +214,20 @@ def view_bill(bill_no):
             key = ((e.material or '').strip(), float(e.qty or 0))
             sale_entry_map.setdefault(key, []).append(e)
 
-        bill_items = []
-        for it in (sale.items or []):
-            key = ((it.product_name or '').strip(), float(it.qty or 0))
-            entry = sale_entry_map.get(key, []).pop(0) if sale_entry_map.get(key) else None
-            name = it.product_name
-            if entry and entry.booked_material and entry.material and entry.booked_material.strip() != entry.material.strip():
-                name = f"{entry.booked_material.strip()} > ALT > {entry.material.strip()}"
-            bill_items.append({
-                'name': name,
-                'qty': it.qty,
-                'price_at_time': it.price_at_time
-            })
+        # One bill line per row the user entered.  The stored booked/due split
+        # must never print as two extra lines on the customer's bill.
+        bill_items = [
+            {
+                'name': row['name'],
+                'qty': row['qty'],
+                'price_at_time': row['rate'],
+                'amount': row['amount'],
+                'note': row['note'],
+                'booked_qty': row['booked_qty'],
+                'due_qty': row['due_qty'],
+            }
+            for row in _direct_sale_display_items(sale)
+        ]
 
         tx_code, tx_label, tx_note = _resolve_transaction_type('DirectSale', sale, entry_hint_id=entry_hint_id)
         return render_template('view_bill.html', bill=sale, type='DirectSale', items=bill_items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, direct_sale_rent_reconciliation=direct_sale_rent_reconciliation, delivery_people=delivery_people, pk_now=pk_now)
@@ -273,7 +275,26 @@ def view_bill(bill_no):
         invoice.date_posted = _parse_dt_safe(getattr(invoice, 'created_at', None)) or (datetime.combine(invoice.date, datetime.min.time()) if invoice.date else None)
 
         items = []
-        if getattr(invoice, 'entries', None) and invoice.entries:
+        linked_sales = [ds for ds in (getattr(invoice, 'direct_sales', None) or []) if not getattr(ds, 'is_void', False)]
+        if linked_sales:
+            collapsed = []
+            for ds in linked_sales:
+                collapsed.extend(_direct_sale_display_items(ds))
+            collapsed_total = sum(float(row['amount'] or 0) for row in collapsed)
+            if collapsed and abs(collapsed_total - float(invoice.total_amount or 0)) <= 0.01:
+                items = [
+                    {
+                        'name': row['name'],
+                        'qty': row['qty'],
+                        'price_at_time': row['rate'],
+                        'amount': row['amount'],
+                        'note': row['note'],
+                        'booked_qty': row['booked_qty'],
+                        'due_qty': row['due_qty'],
+                    }
+                    for row in collapsed
+                ]
+        if not items and getattr(invoice, 'entries', None) and invoice.entries:
             entry_total_qty = sum(float(e.qty or 0) for e in invoice.entries)
             inferred_rate = (float(invoice.total_amount or 0) / entry_total_qty) if entry_total_qty > 0 else 0
             items = []
@@ -286,16 +307,20 @@ def view_bill(bill_no):
                     'qty': e.qty,
                     'price_at_time': inferred_rate
                 })
-        elif getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
+        elif not items and getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
             ds = invoice.direct_sales[0]
             # Preserve item rates so line amount matches invoice totals on first-open.
             items = [
                 {
-                    'name': it.product_name,
-                    'qty': it.qty,
-                    'price_at_time': (it.price_at_time or 0)
+                    'name': row['name'],
+                    'qty': row['qty'],
+                    'price_at_time': row['rate'],
+                    'amount': row['amount'],
+                    'note': row['note'],
+                    'booked_qty': row['booked_qty'],
+                    'due_qty': row['due_qty'],
                 }
-                for it in ds.items
+                for row in _direct_sale_display_items(ds)
             ]
         tx_code, tx_label, tx_note = _resolve_transaction_type('Invoice', invoice, entry_hint_id=entry_hint_id)
         return render_template('view_bill.html', bill=invoice, type='Invoice', items=items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, delivery_people=delivery_people, pk_now=pk_now)

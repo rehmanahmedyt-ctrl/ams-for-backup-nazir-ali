@@ -421,16 +421,25 @@
                         <small class="text-white-50">{{ sale.date_posted.strftime('%I:%M %p') if sale.date_posted else '' }}</small>
                     </td>
                     <td data-label="Material">
-                        {% if sale.items %}
+                        {% set sale_rows = (display_items_by_sale or {}).get(sale.id, []) %}
+                        {% if sale_rows %}
+                            {% for it in sale_rows %}
+                            <div class="small">{{ it.name }}{% if it.is_mixed_row %} <span class="badge bg-warning text-dark">Booked</span> <span class="badge bg-info text-dark">Due</span>{% elif it.is_booked_row %} <span class="badge bg-warning text-dark">Booked</span>{% elif it.is_due_row and sale.category == 'Mixed Transaction' %} <span class="badge bg-info text-dark">Due</span>{% endif %}</div>
+                            {% endfor %}
+                        {% elif sale.items %}
                             {% for it in sale.items %}
-                            <div class="small">{{ it.product_name }}{% if it.alternate_material %} <span class="text-white-50">/ {{ it.alternate_material }}</span>{% endif %}{% if sale.category == 'Mixed Transaction' %} {% if (it.price_at_time or 0) <= 0 %}<span class="badge bg-warning text-dark">Booked</span>{% else %}<span class="badge bg-info text-dark">Due</span>{% endif %}{% endif %}</div>
+                            <div class="small">{{ it.product_name }}{% if it.alternate_material %} <span class="text-white-50">/ {{ it.alternate_material }}</span>{% endif %}</div>
                             {% endfor %}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="text-end fw-bold" data-label="Qty">
-                        {% if sale.items %}
+                        {% if sale_rows %}
+                            {% for it in sale_rows %}
+                            <div>{{ it.qty }}{% if it.is_mixed_row %}<small class="d-block text-white-50" style="font-size:0.7rem;">{{ it.note }}</small>{% endif %}</div>
+                            {% endfor %}
+                        {% elif sale.items %}
                             {% for it in sale.items %}
                             <div>{{ it.qty }}</div>
                             {% endfor %}

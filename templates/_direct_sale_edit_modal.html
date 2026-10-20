@@ -159,15 +159,31 @@
                             <div class="text-center">Remove</div>
                         </div>
                         <div class="items-container-edit">
-                            {% for item in sale.items %}
+                            {% for item in (sale_display_items or sale.items) %}
+                            {% if sale_display_items %}
+                            {# One row per entered line: booked qty + due qty collapsed together. #}
+                            {% set row_material = item.booked_material or item.material %}
+                            {% set row_alt = item.material if (item.booked_material and item.booked_material|lower != (item.material or '')|lower) else '' %}
+                            {% set row_material_id = item.material_id or '' %}
+                            {% set row_alt_id = item.alternate_material_id or '' %}
+                            {% set row_qty = item.qty %}
+                            {% set row_rate = item.rate %}
+                            {% set row_grn = item.grn_item_id or '' %}
+                            {% else %}
                             {% set booked_src = (sale_booked_material_by_item.get(item.id) if sale_booked_material_by_item else none) or '' %}
                             {% set row_material = booked_src or item.product_name %}
                             {% set row_alt = item.product_name if (booked_src and booked_src|lower != (item.product_name or '')|lower) else '' %}
+                            {% set row_material_id = '' %}
+                            {% set row_alt_id = '' %}
+                            {% set row_qty = item.qty %}
+                            {% set row_rate = item.price_at_time %}
+                            {% set row_grn = item.grn_item_id or '' %}
+                            {% endif %}
                             <div class="compact-item-row mb-2 p-2 rounded border border-secondary bg-dark">
                                 <div class="sale-item-grid">
                                     <div class="position-relative">
                                         <div class="input-group input-group-sm">
-                                            <input type="hidden" name="material_id[]" id="editSaleMaterialId{{ sale.id }}_{{ loop.index0 }}" class="material-id-input" value="{% for mat in materials %}{% if mat.name|lower == row_material|lower %}{{ mat.id }}{% endif %}{% endfor %}">
+                                            <input type="hidden" name="material_id[]" id="editSaleMaterialId{{ sale.id }}_{{ loop.index0 }}" class="material-id-input" value="{{ row_material_id or '' }}{% if not row_material_id %}{% for mat in materials %}{% if mat.name|lower == row_material|lower %}{{ mat.id }}{% endif %}{% endfor %}{% endif %}">
                                             <input type="text" name="product_name[]" id="editSaleMaterialSearch{{ sale.id }}_{{ loop.index0 }}" value="{{ row_material }}" class="form-control bg-dark text-white border-secondary price-trigger" placeholder="Search material..." autocomplete="off" required onfocus="showCombobox('editSaleMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleMaterialList{{ sale.id }}_{{ loop.index0 }}')" oninput="filterCombobox('editSaleMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleMaterialList{{ sale.id }}_{{ loop.index0 }}', 'editSaleMaterialDisplay{{ sale.id }}_{{ loop.index0 }}')" data-material-id-input="editSaleMaterialId{{ sale.id }}_{{ loop.index0 }}" data-selected-material-name="{{ row_material }}" data-combo-suppress="1">
                                             <button class="btn btn-outline-secondary material-toggle-btn" type="button" onclick="toggleCombobox('editSaleMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleMaterialList{{ sale.id }}_{{ loop.index0 }}')">
                                                 <i class="bi bi-chevron-down text-warning"></i>
@@ -184,7 +200,7 @@
                                     </div>
                                     <div class="position-relative">
                                         <div class="input-group input-group-sm">
-                                            <input type="text" name="grn_item_id[]" id="editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}" value="{{ item.grn_item_id or '' }}" class="form-control bg-dark text-white border-secondary grn-input" placeholder="GRN (optional)" autocomplete="off" onfocus="showCombobox('editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNList{{ sale.id }}_{{ loop.index0 }}')" oninput="filterCombobox('editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNList{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNDisplay{{ sale.id }}_{{ loop.index0 }}')">
+                                            <input type="text" name="grn_item_id[]" id="editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}" value="{{ row_grn }}" class="form-control bg-dark text-white border-secondary grn-input" placeholder="GRN (optional)" autocomplete="off" onfocus="showCombobox('editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNList{{ sale.id }}_{{ loop.index0 }}')" oninput="filterCombobox('editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNList{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNDisplay{{ sale.id }}_{{ loop.index0 }}')">
                                             <button class="btn btn-outline-secondary grn-toggle-btn" type="button" onclick="toggleCombobox('editSaleGRNSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleGRNList{{ sale.id }}_{{ loop.index0 }}')">
                                                 <i class="bi bi-chevron-down text-warning"></i>
                                             </button>
@@ -203,7 +219,7 @@
                                     </div>
                                     <div class="position-relative">
                                         <div class="input-group input-group-sm">
-                                            <input type="hidden" name="alternate_material_id[]" id="editSaleAltMaterialId{{ sale.id }}_{{ loop.index0 }}" class="alt-material-id-input" value="{% if row_alt %}{% for mat in materials %}{% if mat.name|lower == row_alt|lower %}{{ mat.id }}{% endif %}{% endfor %}{% endif %}">
+                                            <input type="hidden" name="alternate_material_id[]" id="editSaleAltMaterialId{{ sale.id }}_{{ loop.index0 }}" class="alt-material-id-input" value="{{ row_alt_id or '' }}{% if not row_alt_id and row_alt %}{% for mat in materials %}{% if mat.name|lower == row_alt|lower %}{{ mat.id }}{% endif %}{% endfor %}{% endif %}">
                                             <input type="text" name="alternate_material[]" id="editSaleAltMaterialSearch{{ sale.id }}_{{ loop.index0 }}" value="{{ row_alt }}" class="form-control bg-dark text-white border-secondary alt-material-input" placeholder="Alternate (optional)" autocomplete="off" onfocus="showCombobox('editSaleAltMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleAltMaterialList{{ sale.id }}_{{ loop.index0 }}')" oninput="filterCombobox('editSaleAltMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleAltMaterialList{{ sale.id }}_{{ loop.index0 }}', 'editSaleAltMaterialDisplay{{ sale.id }}_{{ loop.index0 }}')" data-material-id-input="editSaleAltMaterialId{{ sale.id }}_{{ loop.index0 }}">
                                             <button class="btn btn-outline-secondary alt-material-toggle-btn" type="button" onclick="toggleCombobox('editSaleAltMaterialSearch{{ sale.id }}_{{ loop.index0 }}', 'editSaleAltMaterialList{{ sale.id }}_{{ loop.index0 }}')">
                                                 <i class="bi bi-chevron-down text-warning"></i>
@@ -221,12 +237,12 @@
                                     <div>
                                         <div class="input-group input-group-sm">
                                             <button class="btn btn-outline-secondary btn-sm" type="button" onclick="changeSaleQty(this, -1)">-</button>
-                                            <input type="number" step="any" name="qty[]" value="{{ item.qty }}" class="form-control bg-dark text-white border-secondary text-center qty-input" style="font-size: 1.05rem; font-weight: 700; padding: 0.475rem 0.5rem;" required>
+                                            <input type="number" step="any" name="qty[]" value="{{ row_qty }}" class="form-control bg-dark text-white border-secondary text-center qty-input" style="font-size: 1.05rem; font-weight: 700; padding: 0.475rem 0.5rem;" required>
                                             <button class="btn btn-outline-secondary btn-sm" type="button" onclick="changeSaleQty(this, 1)">+</button>
                                         </div>
                                     </div>
                                     <div class="rate-cell position-relative">
-                                        <input type="number" step="any" name="unit_rate[]" class="form-control form-control-sm bg-dark text-white border-secondary rate-input" value="{{ item.price_at_time }}" placeholder="Rate (not needed if booked)">
+                                        <input type="number" step="any" name="unit_rate[]" class="form-control form-control-sm bg-dark text-white border-secondary rate-input" value="{{ row_rate }}" placeholder="Rate (not needed if booked)">
                                         <div class="reserved-rate-badge text-warning small fw-bold" style="display:none;">Reserved</div>
                                         <div class="ignore-booking-inline">
                                             <input type="hidden" name="ignore_booking_item[]" value="0" class="ignore-booking-hidden">

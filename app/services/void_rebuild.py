@@ -79,6 +79,7 @@ from app.services.lookups import (
 )
 from app.services.sales_core import (
     _direct_sale_bill_refs,
+    _direct_sale_booked_material_by_item,
     _direct_sale_client_identity,
     _direct_sale_default_bill_ref,
     _direct_sale_item_category,
@@ -1814,6 +1815,16 @@ def _active_direct_sale_items_generate_entries(sale, refs=None, client_code=None
                 return row['booked_material']
         return None
 
+    # Authoritative source for "which booking did this line fulfil?" is the
+    # booking allocation written with the sale.  The old-entry scan above is
+    # only a legacy fallback: it matched the previous rows by material+qty, so
+    # any edit that changed the quantity silently dropped the alternate-booking
+    # identity (the ledger then booked the dispatch against the delivered
+    # material instead of the booked one).
+    booked_by_item = _direct_sale_booked_material_by_item(
+        [it.id for it in (sale.items or []) if it.id]
+    )
+
     created = 0
     for item in sale.items or []:
         qty = float(item.qty or 0)
@@ -1825,7 +1836,9 @@ def _active_direct_sale_items_generate_entries(sale, refs=None, client_code=None
             continue
         inferred_booked_material = None
         if item_category == 'Booking Delivery':
-            inferred_booked_material = _take_old_booked_material(item.product_name, qty)
+            inferred_booked_material = booked_by_item.get(item.id)
+            if not inferred_booked_material:
+                inferred_booked_material = _take_old_booked_material(item.product_name, qty)
         is_alt = bool(inferred_booked_material and inferred_booked_material != item.product_name)
         row = Entry(
             date=now.strftime('%Y-%m-%d'),
