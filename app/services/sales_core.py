@@ -801,6 +801,221 @@ def _rent_reconciliation_from_items(items, delivery_rent_cost=0, client_name=Non
     }
 
 
+def _direct_sale_booked_material_by_item(sale_item_ids):
+    """sale_item_id -> booked material name, from active booking allocations.
+
+    The booking allocations are the durable record of *which* booking a direct
+    sale line fulfilled, so they are the right source for rebuilding the
+    booked-material identity (the old heuristic scanned the previous entry
+    rows, which loses the link as soon as the quantity is edited).
+    """
+    ids = [i for i in (sale_item_ids or []) if i]
+    if not ids:
+        return {}
+    rows = db.session.query(
+        BookingAllocation.sale_item_id,
+        BookingItem.material_name,
+    ).join(
+        BookingItem, BookingAllocation.booking_item_id == BookingItem.id
+    ).filter(
+        BookingAllocation.sale_item_id.in_(ids),
+        BookingAllocation.is_void == False,
+    ).order_by(BookingAllocation.id.asc()).all()
+    out = {}
+    for sale_item_id, material_name in rows:
+        name = (material_name or '').strip()
+        if name and sale_item_id not in out:
+            out[sale_item_id] = name
+    return out
+
+
+def _direct_sale_booked_material_from_entries(sale_ids):
+    """Legacy fallback: booked material recorded on the sale's own OUT rows.
+
+    Older sales predate booking allocations, but their entries still carry
+    ``booked_material``.  Matching on (material, qty) restores the collapsed
+    row for them too.
+    """
+    ids = [i for i in (sale_ids or []) if i]
+    if not ids:
+        return {}
+    rows = Entry.query.filter(
+        Entry.source_module == 'sales',
+        Entry.source_table == 'direct_sale',
+        Entry.source_id.in_(ids),
+        Entry.is_void == False,
+        Entry.booked_material.isnot(None),
+    ).all()
+    out = {}
+    for row in rows:
+        booked = (row.booked_material or '').strip()
+        if not booked:
+            continue
+        key = (
+            row.source_id,
+            (row.material or '').strip(),
+            round(float(row.qty or 0), 6),
+        )
+        out.setdefault(key, booked)
+    return out
+
+
+def _direct_sale_display_items(sale, booked_by_item=None):
+    """Render one direct-sale line per row the user actually entered.
+
+    A row typed as *(booked material + alternate material + qty above the
+    booking + a rate for the excess)* is stored internally as two source
+    lines — a rate-0 booked slice and a rate>0 due slice — because booking
+    consumption and stock movement are tracked per slice.  That split is an
+    implementation detail of the ledger, never an extra row the user asked
+    for, so every screen and every bill collapses it back into ONE row:
+
+    * ``qty``          total physical dispatch (booked + due),
+    * ``booked_qty``   the part covered by the booking,
+    * ``due_qty``      the chargeable excess,
+    * ``rate``         the rate entered for the excess,
+    * ``amount``       what is actually charged for the row.
+    """
+    if not sale:
+        return []
+    items = [it for it in (sale.items or []) if float(it.qty or 0) > 0]
+    if booked_by_item is None:
+        booked_by_item = _direct_sale_booked_material_by_item([it.id for it in items if it.id])
+        # Legacy sales have no booking allocation; their rate-0 line still
+        # matches the OUT row that recorded the booked material.
+        legacy = _direct_sale_booked_material_from_entries([sale.id])
+        for item in items:
+            if not item.id or item.id in booked_by_item:
+                continue
+            if float(item.price_at_time or 0) > 0:
+                continue
+            key = (sale.id, (item.product_name or '').strip(), round(float(item.qty or 0), 6))
+            booked = legacy.get(key)
+            if booked:
+                booked_by_item[item.id] = booked
+
+    def _new_group(item, product, qty, rate, booked):
+        # A booked slice is always rate 0.  If legacy data carries a price on
+        # an allocated line, charge the full quantity rather than dropping the
+        # money (the label still shows the booking it consumed).
+        free_portion = bool(booked) and float(rate or 0) <= 0
+        return {
+            'name': product,
+            'material': product,
+            'booked_material': booked,
+            'qty': float(qty),
+            'booked_qty': float(qty) if free_portion else 0.0,
+            'due_qty': 0.0 if free_portion else float(qty),
+            'rate': float(rate or 0),
+            'amount': 0.0 if free_portion else float(qty) * float(rate or 0),
+            'grn_item_id': item.grn_item_id,
+            'sale_item_ids': [item.id],
+        }
+
+    groups = []
+    for item in items:
+        product = (item.product_name or '').strip()
+        if not product:
+            continue
+        qty = float(item.qty or 0)
+        rate = float(item.price_at_time or 0)
+        booked = (booked_by_item.get(item.id) or '').strip() or None
+        prev = groups[-1] if groups else None
+
+        if booked:
+            groups.append(_new_group(item, product, qty, rate, booked))
+            continue
+
+        # A chargeable slice immediately following the booked slice of the same
+        # delivered material belongs to the same entered row.
+        if prev and prev['material'] == product and prev['booked_material']:
+            if prev['due_qty'] <= 0:
+                prev['due_qty'] = qty
+                prev['rate'] = rate
+                prev['qty'] = float(prev['booked_qty']) + qty
+                prev['amount'] = qty * rate
+                if item.grn_item_id and not prev.get('grn_item_id'):
+                    prev['grn_item_id'] = item.grn_item_id
+                prev['sale_item_ids'].append(item.id)
+                continue
+            if abs(float(prev['rate'] or 0) - rate) <= 1e-9:
+                # FIFO lot split of the same due slice.
+                prev['due_qty'] = float(prev['due_qty']) + qty
+                prev['qty'] = float(prev['qty']) + qty
+                prev['amount'] = float(prev['amount']) + qty * rate
+                prev['sale_item_ids'].append(item.id)
+                continue
+
+        # Consecutive chargeable lots of the same material/rate are one row.
+        if prev and not prev['booked_material'] and prev['material'] == product \
+                and abs(float(prev['rate'] or 0) - rate) <= 1e-9:
+            prev['qty'] = float(prev['qty']) + qty
+            prev['due_qty'] = float(prev['due_qty']) + qty
+            prev['amount'] = float(prev['amount']) + qty * rate
+            prev['sale_item_ids'].append(item.id)
+            if item.grn_item_id and not prev.get('grn_item_id'):
+                prev['grn_item_id'] = item.grn_item_id
+            continue
+
+        groups.append(_new_group(item, product, qty, rate, None))
+
+    for group in groups:
+        booked = group['booked_material']
+        product = group['material']
+        if booked and booked.strip().lower() != product.strip().lower():
+            group['name'] = f"{booked.strip()} > ALT > {product}"
+        else:
+            group['name'] = product
+        group['is_booked_row'] = bool(group['booked_qty']) and group['due_qty'] <= 0
+        group['is_due_row'] = group['due_qty'] > 0
+        group['is_mixed_row'] = bool(group['booked_qty']) and group['due_qty'] > 0
+        group['note'] = ''
+        if group['is_mixed_row']:
+            group['note'] = (
+                f"{_fmt_qty_for_note(group['booked_qty'])} booked + "
+                f"{_fmt_qty_for_note(group['due_qty'])} due"
+            )
+        elif group['is_booked_row']:
+            group['note'] = 'Booked'
+    return groups
+
+
+def _fmt_qty_for_note(value):
+    try:
+        num = float(value or 0)
+    except (TypeError, ValueError):
+        return '0'
+    if abs(num - round(num)) <= 1e-9:
+        return f"{int(round(num)):,}"
+    return f"{num:,.3f}".rstrip('0').rstrip('.')
+
+
+def _direct_sale_display_items_map(sales):
+    """Batch version of :func:`_direct_sale_display_items` (two queries total)."""
+    sales = list(sales or [])
+    item_ids = []
+    for sale in sales:
+        for item in (sale.items or []):
+            if item.id and float(item.qty or 0) > 0:
+                item_ids.append(item.id)
+    booked_by_item = _direct_sale_booked_material_by_item(item_ids)
+    legacy = _direct_sale_booked_material_from_entries([sale.id for sale in sales])
+    out = {}
+    for sale in sales:
+        fallback = dict(booked_by_item)
+        for item in (sale.items or []):
+            if item.id in fallback or not item.id:
+                continue
+            if float(item.price_at_time or 0) > 0:
+                continue
+            key = (sale.id, (item.product_name or '').strip(), round(float(item.qty or 0), 6))
+            booked = legacy.get(key)
+            if booked:
+                fallback[item.id] = booked
+        out[sale.id] = _direct_sale_display_items(sale, booked_by_item=fallback)
+    return out
+
+
 def _dedupe_direct_sale_items(items):
     """Drop exact repeated sale lines before writing derived ledgers."""
     merged = []

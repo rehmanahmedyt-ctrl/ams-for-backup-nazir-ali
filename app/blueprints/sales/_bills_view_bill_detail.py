@@ -27,14 +27,19 @@ def view_bill_detail(type, id):
             key = ((e.material or '').strip(), float(e.qty or 0))
             entry_map.setdefault(key, []).append(e)
 
-        items = []
-        for it in (bill.items or []):
-            key = ((it.product_name or '').strip(), float(it.qty or 0))
-            entry = entry_map.get(key, []).pop(0) if entry_map.get(key) else None
-            name = it.product_name
-            if entry and entry.booked_material and entry.material and entry.booked_material.strip() != entry.material.strip():
-                name = f"{entry.booked_material.strip()} > ALT > {entry.material.strip()}"
-            items.append({'name': name, 'qty': it.qty, 'price_at_time': it.price_at_time})
+        # Collapse the internal booked/due split into one line per entered row.
+        items = [
+            {
+                'name': row['name'],
+                'qty': row['qty'],
+                'price_at_time': row['rate'],
+                'amount': row['amount'],
+                'note': row['note'],
+                'booked_qty': row['booked_qty'],
+                'due_qty': row['due_qty'],
+            }
+            for row in _direct_sale_display_items(bill)
+        ]
     elif type == 'MaterialReturn':
         bill = MaterialReturn.query.get_or_404(id)
         items = bill.items

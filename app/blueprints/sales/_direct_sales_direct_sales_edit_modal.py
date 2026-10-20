@@ -95,6 +95,19 @@ def direct_sale_edit_modal(sale_id):
         if booked:
             booked_by_sale_item[it.id] = booked
 
+    # The edit sheet must show exactly the rows the user entered.  The stored
+    # booked/due split (rate-0 reserved slice + rate>0 excess slice) is a
+    # ledger detail; rendering it verbatim added a second item row that the
+    # user never typed.
+    display_items = _direct_sale_display_items(sale, booked_by_item=booked_by_sale_item)
+    material_id_by_name = {
+        (mat.name or '').strip().lower(): mat.id for mat in materials if (mat.name or '').strip()
+    }
+    for row in display_items:
+        row['material_id'] = material_id_by_name.get((row.get('booked_material') or row.get('material') or '').strip().lower())
+        row['alternate_material_id'] = material_id_by_name.get((row.get('material') or '').strip().lower()) \
+            if row.get('booked_material') and (row.get('booked_material') or '').strip().lower() != (row.get('material') or '').strip().lower() else None
+
     return render_template(
         '_direct_sale_edit_modal.html',
         sale=sale,
@@ -107,4 +120,5 @@ def direct_sale_edit_modal(sale_id):
         delivery_rent_totals_by_sale={sale.id: rent_total},
         sale_client_code_by_id={sale.id: matched_client.code if matched_client else sale.client_code},
         sale_booked_material_by_item=booked_by_sale_item,
+        sale_display_items=display_items,
     )

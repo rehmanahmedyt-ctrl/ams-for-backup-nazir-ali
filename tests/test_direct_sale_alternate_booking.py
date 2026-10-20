@@ -193,3 +193,76 @@ def test_edit_round_trip_keeps_booked_and_due_orientation(seeded, app):
     assert after["materials"][ALTERNATE] == pytest.approx(10_000 - DELIVERED_QTY)
     assert after["materials"][ORIGINAL] == pytest.approx(10_000)
     assert after["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
+
+
+def test_one_row_everywhere_the_user_looks(seeded, app):
+    """The entered row must stay ONE row on every screen and on the bill.
+
+    Save form row: Material = booked (Capital Steel), Alternate = ISM,
+    Qty = 797.8, Rate = 236 for the 41.8 excess.  The ledger splits that into
+    a rate-0 booked slice + a rate>0 due slice; that split must never surface
+    as a second line to the user.
+    """
+    assert "Direct sale added successfully" in _post_sale(seeded).get_data(as_text=True)
+    sale_id = _sale_state(app)["sale"]["id"]
+    bill_no = "ST-BILL-1"
+    expected_label = f"{ORIGINAL} &gt; ALT &gt; {ALTERNATE}"  # Jinja autoescaping
+
+    # 1. Direct Sales list: one material line, one qty line.
+    page = seeded.get("/direct_sales").get_data(as_text=True)
+    assert page.count(expected_label) == 1
+    assert "756 booked + 41.8 due" in page
+
+    # 2. Edit sheet: exactly one item row, carrying the entered values.
+    modal = seeded.get(f"/direct_sales/{sale_id}/edit-modal").get_data(as_text=True)
+    assert modal.count('class="compact-item-row') == 1
+    assert 'name="product_name[]"' in modal
+    assert f'value="{ORIGINAL}"' in modal
+    assert f'value="{ALTERNATE}"' in modal
+    assert f'value="{DELIVERED_QTY}"' in modal
+    assert f'value="{RATE}"' in modal
+
+    # 3. Bill: one line, amount = excess x rate, quantity = full dispatch.
+    bill = seeded.get(f"/view_bill/{bill_no}").get_data(as_text=True)
+    assert bill.count(expected_label) == 1
+    assert "756 booked + 41.8 due" in bill
+    assert f"{DUE_QTY * RATE:,.2f}".rstrip('0').rstrip('.') in bill
+
+    # 4. Storage/ledger unchanged: still exact after the display collapse.
+    state = _sale_state(app)
+    assert state["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
+    assert state["materials"][ALTERNATE] == pytest.approx(10_000 - DELIVERED_QTY)
+    assert state["materials"][ORIGINAL] == pytest.approx(10_000)
+
+
+def test_edit_from_the_single_row_does_not_multiply_rows(seeded, app):
+    """Re-saving the one visible row must not add another row or re-charge."""
+    assert "Direct sale added successfully" in _post_sale(seeded).get_data(as_text=True)
+    sale_id = _sale_state(app)["sale"]["id"]
+
+    resp = seeded.post(f"/edit_bill/DirectSale/{sale_id}", data={
+        "client_code": "STEEL-1",
+        "category": "Mixed Transaction",
+        "driver_name": "Driver One",
+        "manual_bill_no": "ST-BILL-1",
+        "paid_amount": "0",
+        "discount": "0",
+        # Exactly what the one-row edit sheet submits.
+        "product_name[]": [ORIGINAL],
+        "qty[]": [str(DELIVERED_QTY)],
+        "unit_rate[]": [str(RATE)],
+        "alternate_material[]": [ALTERNATE],
+        "ignore_booking_item[]": ["0"],
+    }, follow_redirects=True)
+    assert "Direct sale updated and resynced" in resp.get_data(as_text=True)
+
+    state = _sale_state(app)
+    assert state["sale"]["amount"] == pytest.approx(DUE_QTY * RATE)
+    assert [(n, round(q, 3), round(r, 2)) for n, q, r in state["sale"]["items"]] == [
+        (ALTERNATE, BOOKED_QTY, 0.0),
+        (ALTERNATE, round(DUE_QTY, 3), RATE),
+    ]
+    assert len(state["allocations"]) == 1
+
+    modal = seeded.get(f"/direct_sales/{sale_id}/edit-modal").get_data(as_text=True)
+    assert modal.count('class="compact-item-row') == 1
