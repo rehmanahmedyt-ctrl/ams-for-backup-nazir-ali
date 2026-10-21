@@ -63,6 +63,24 @@
         sub='Across all open bills',
         cta='Review unpaid bills'
     ) }}
+    {# === Exact Current Profit/Loss — authoritative net profit for current month (MTD), identical to Profit Reports === #}
+    {% if dashboard_profit and (current_user.can_view_reports or current_user.can_view_history or current_user.role == 'admin') %}
+      {% set _profit_colour = 'green' if dashboard_profit.is_profit else 'red' %}
+      {% if dashboard_profit.amount == 0 %}
+        {% set _profit_colour = 'amber' %}
+      {% endif %}
+      {% set _profit_icon = 'bi-graph-up-arrow' if dashboard_profit.is_profit else 'bi-graph-down-arrow' %}
+      {% set _profit_href = url_for('profit_reports', start_date=dashboard_profit.start_date, end_date=dashboard_profit.end_date) %}
+      {{ ui_tile(
+          href=_profit_href,
+          label='Current ' ~ dashboard_profit.label ~ ' (MTD)',
+          value='Rs. ' ~ "{:,.2f}".format(dashboard_profit.amount),
+          icon=_profit_icon,
+          colour=_profit_colour,
+          sub=dashboard_profit.period_label ~ ' · Margin ' ~ "{:,.2f}".format(dashboard_profit.margin_pct) ~ '%',
+          cta='View profit breakdown'
+      ) }}
+    {% endif %}
     {% if current_user.can_manage_payments or current_user.role == 'admin' %}
     {{ ui_tile(
         href=url_for('accounts.dashboard'),
