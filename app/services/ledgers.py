@@ -545,7 +545,7 @@ def _build_client_ledger_rows(client):
             continue
         material_display = mat_name
         if d.booked_material and d.material and d.booked_material != d.material:
-            material_display = f"{d.booked_material}>ALT>{d.material}"
+            material_display = f"{d.material} (Alt against {d.booked_material} booking)"
         date_sort = None
         try:
             if d.date and d.time:
@@ -767,6 +767,7 @@ def _render_client_history_receipt(client, bill_type, bill_obj):
     all_clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
     all_materials = Material.query.order_by(Material.name.asc()).all()
     items = []
+    supplied_totals = []
     template_name = 'view_bill.html'
     direct_sale_rent_reconciliation = None
     delivery_people = None
@@ -783,7 +784,13 @@ def _render_client_history_receipt(client, bill_type, bill_obj):
     elif bill_type == 'Payment':
         template_name = 'payment_receipt.html'
     elif bill_type == 'DirectSale':
-        items = bill_obj.items
+        from app.services.sales_core import (
+            _direct_sale_bill_lines,
+            _direct_sale_display_items,
+            _direct_sale_supplied_totals,
+        )
+        items = _direct_sale_bill_lines(_direct_sale_display_items(bill_obj))
+        supplied_totals = _direct_sale_supplied_totals(items)
         if not (bill_obj.driver_name or '').strip():
             inferred_driver = _infer_driver_name_from_refs(_direct_sale_bill_refs(bill_obj))
             if inferred_driver:
@@ -828,6 +835,7 @@ def _render_client_history_receipt(client, bill_type, bill_obj):
         bill=bill_obj,
         type=bill_type,
         items=items,
+        supplied_totals=supplied_totals,
         client=client,
         client_balance=client_balance,
         previous_balance=previous_balance,

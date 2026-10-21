@@ -131,3 +131,102 @@ def test_repair_moves_excess_to_delivered_material(app, buggy_sale):
     assert after["totals"][ALTERNATE] == pytest.approx(10_000 - BOOKED_QTY - DUE_QTY)
     # Booking identity is preserved on the booked slice.
     assert (ALTERNATE, ORIGINAL, BOOKED_QTY, "Booking Delivery") in after["entries"]
+
+
+def test_cli_dry_run_is_readonly_and_confirm_repairs_legacy_unallocated_sale(tmp_path, app_factory):
+    """CLI verification:
+    - Relative --database path works cleanly.
+    - Dry-run leaves database file SHA-256 bit-for-bit unchanged.
+    - Detects pre-BookingAllocation legacy sales via Entry.booked_material as well.
+    - --sale-id <id> --confirm creates backup, populates DirectSaleItem columns,
+      fixes stock totals, and leaves financial amount untouched.
+    """
+    import hashlib
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    db_file = tmp_path / "legacy_case.db"
+    test_app = app_factory(db_file=db_file)
+    with test_app.app_context():
+        db.session.add_all([
+            Material(code="M12", name="ISM 12MM STEEL", unit="Kg", total=1000.0, unit_price=230.0),
+            Material(code="M20", name="20MM STEEL", unit="Kg", total=1000.0, unit_price=250.0),
+            Client(code="C-1106", name="Legacy Steel Client", category="General"),
+            Entry(date="2026-01-01", time="00:00:00", type="IN", material="ISM 12MM STEEL",
+                  qty=1000.0, nimbus_no="Opening Stock", client_category="Opening"),
+            Entry(date="2026-01-01", time="00:00:00", type="IN", material="20MM STEEL",
+                  qty=1000.0, nimbus_no="Opening Stock", client_category="Opening"),
+        ])
+        bk = Booking(client_name="Legacy Steel Client", amount=152.1 * 230.0)
+        db.session.add(bk)
+        db.session.flush()
+        db.session.add(BookingItem(booking_id=bk.id, material_name="ISM 12MM STEEL", qty=152.1, price_at_time=230.0))
+        sale = DirectSale(
+            client_name="Legacy Steel Client",
+            client_code="C-1106",
+            category="Mixed Transaction",
+            amount=115.0,
+            paid_amount=0.0,
+            manual_bill_no="MB NO.8877-2",
+        )
+        db.session.add(sale)
+        db.session.flush()
+        # No BookingAllocation rows (simulating pre-June-2026 sales #703 / #739 / #1106)
+        db.session.add_all([
+            DirectSaleItem(sale_id=sale.id, product_name="20MM STEEL", qty=152.1, price_at_time=0.0),
+            DirectSaleItem(sale_id=sale.id, product_name="ISM 12MM STEEL", qty=0.5, price_at_time=230.0),
+            Entry(date="2026-06-08", time="08:41:00", type="OUT", material="20MM STEEL",
+                  booked_material="ISM 12MM STEEL", client="Legacy Steel Client", client_code="C-1106",
+                  qty=152.1, bill_no="MB NO.8877-2", nimbus_no="Direct Sale",
+                  client_category="Booking Delivery", is_alternate=True,
+                  source_module="sales", source_table="direct_sale", source_id=sale.id),
+            Entry(date="2026-06-08", time="08:41:00", type="OUT", material="ISM 12MM STEEL",
+                  client="Legacy Steel Client", client_code="C-1106",
+                  qty=0.5, bill_no="MB NO.8877-2", nimbus_no="Direct Sale",
+                  client_category="Credit Customer", is_alternate=False,
+                  source_module="sales", source_table="direct_sale", source_id=sale.id),
+        ])
+        db.session.commit()
+        sale_id = sale.id
+        db.engine.dispose()
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "repair_controlled" / "repair_alternate_booking_excess.py"
+    sha_before = hashlib.sha256(db_file.read_bytes()).hexdigest()
+
+    # Dry run from tmp_path with a relative --database argument
+    dry = subprocess.run(
+        [sys.executable, str(script), "--database", "legacy_case.db"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "DRY RUN" in dry.stdout
+    assert "MB NO.8877-2" in dry.stdout
+    assert hashlib.sha256(db_file.read_bytes()).hexdigest() == sha_before
+
+    # Confirmed repair
+    applied = subprocess.run(
+        [sys.executable, str(script), "--database", "legacy_case.db", "--sale-id", str(sale_id), "--confirm"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "repaired sale" in applied.stdout
+    assert list((tmp_path / "reconcile_backups").iterdir())
+
+    with test_app.app_context():
+        repaired_sale = db.session.get(DirectSale, sale_id)
+        assert float(repaired_sale.amount) == pytest.approx(115.0)
+        for it in repaired_sale.items:
+            assert it.product_name == "20MM STEEL"
+            assert it.booked_material == "ISM 12MM STEEL"
+            assert it.is_alternate is True
+        m12 = Material.query.filter_by(name="ISM 12MM STEEL").one()
+        m20 = Material.query.filter_by(name="20MM STEEL").one()
+        assert float(m12.total) == pytest.approx(1000.0)
+        assert float(m20.total) == pytest.approx(1000.0 - 152.6)
+        db.engine.dispose()
+

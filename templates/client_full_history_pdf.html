@@ -232,7 +232,7 @@
             </thead>
             <tbody>
                 {% for material_name, rows in material_history_grouped.items() %}
-                <tr class="material-heading"><td colspan="7">{{ rows[0].material_display or rows[0].material or material_name }}</td></tr>
+                <tr class="material-heading"><td colspan="7">{{ material_name }}</td></tr>
                     {% for row in rows %}
                     <tr>
                         <td>{{ row.date or '' }}</td>

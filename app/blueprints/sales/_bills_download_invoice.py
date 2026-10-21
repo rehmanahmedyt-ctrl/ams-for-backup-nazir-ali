@@ -240,20 +240,32 @@ def download_invoice(bill_no):
         invoice.discount = invoice_discount
         invoice.paid_amount = max(0, (invoice.total_amount or 0) - invoice_discount - (invoice.balance or 0))
         invoice.date_posted = _parse_dt_safe(getattr(invoice, 'created_at', None)) or (datetime.combine(invoice.date, datetime.min.time()) if invoice.date else None)
-        if getattr(invoice, 'entries', None) and invoice.entries:
+        items = []
+        linked_sales = [ds for ds in (getattr(invoice, 'direct_sales', None) or []) if not getattr(ds, 'is_void', False)]
+        if linked_sales:
+            collapsed = []
+            for ds in linked_sales:
+                collapsed.extend(_direct_sale_display_items(ds))
+            collapsed_total = sum(float(row['amount'] or 0) for row in collapsed)
+            if collapsed and abs(collapsed_total - float(invoice.total_amount or 0)) <= 0.01:
+                items = _direct_sale_bill_lines(collapsed)
+        if not items and getattr(invoice, 'entries', None) and invoice.entries:
             entry_total_qty = sum(float(e.qty or 0) for e in invoice.entries)
             inferred_rate = (float(invoice.total_amount or 0) / entry_total_qty) if entry_total_qty > 0 else 0
             items = []
             for e in invoice.entries:
-                name = (e.material or '').strip()
-                if e.booked_material and e.material and e.booked_material.strip() != e.material.strip():
-                    name = f"{e.booked_material.strip()} > ALT > {e.material.strip()}"
+                supplied = (e.material or '').strip()
+                booked = (e.booked_material or '').strip()
+                line_note = ''
+                if booked and supplied and booked.lower() != supplied.lower():
+                    line_note = f"Alternative supplied against original {booked} booking"
                 items.append({
-                    'name': name,
+                    'name': supplied,
                     'qty': e.qty,
-                    'price_at_time': inferred_rate
+                    'price_at_time': inferred_rate,
+                    'note': line_note,
                 })
-        elif getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
+        elif not items and getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
             ds = invoice.direct_sales[0]
             # Preserve item rates so line amount matches invoice totals on first-open.
             items = _direct_sale_bill_lines(_direct_sale_display_items(ds))
@@ -302,11 +314,13 @@ def download_invoice(bill_no):
     if bill_type == 'Payment':
         template_name = 'payment_receipt.html'
 
+    supplied_totals = _direct_sale_supplied_totals(items) if bill_type in ('DirectSale', 'Invoice') else []
     rendered = render_template(
         template_name,
         bill=bill_obj,
         type=bill_type,
         items=items,
+        supplied_totals=supplied_totals,
         client=client,
         client_balance=client_balance,
         previous_balance=previous_balance,

@@ -214,12 +214,11 @@ def view_bill(bill_no):
             key = ((e.material or '').strip(), float(e.qty or 0))
             sale_entry_map.setdefault(key, []).append(e)
 
-        # One bill line per row the user entered.  The stored booked/due split
-        # must never print as two extra lines on the customer's bill.
         bill_items = _direct_sale_bill_lines(_direct_sale_display_items(sale))
+        supplied_totals = _direct_sale_supplied_totals(bill_items)
 
         tx_code, tx_label, tx_note = _resolve_transaction_type('DirectSale', sale, entry_hint_id=entry_hint_id)
-        return render_template('view_bill.html', bill=sale, type='DirectSale', items=bill_items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, direct_sale_rent_reconciliation=direct_sale_rent_reconciliation, delivery_people=delivery_people, pk_now=pk_now)
+        return render_template('view_bill.html', bill=sale, type='DirectSale', items=bill_items, supplied_totals=supplied_totals, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, direct_sale_rent_reconciliation=direct_sale_rent_reconciliation, delivery_people=delivery_people, pk_now=pk_now)
     if invoice:
         if not (getattr(invoice, 'note', None) or '').strip():
             ds_notes = [ds.note.strip() for ds in (getattr(invoice, 'direct_sales', None) or []) if (getattr(ds, 'note', None) or '').strip()]
@@ -277,20 +276,24 @@ def view_bill(bill_no):
             inferred_rate = (float(invoice.total_amount or 0) / entry_total_qty) if entry_total_qty > 0 else 0
             items = []
             for e in invoice.entries:
-                name = (e.material or '').strip()
-                if e.booked_material and e.material and e.booked_material.strip() != e.material.strip():
-                    name = f"{e.booked_material.strip()} > ALT > {e.material.strip()}"
+                supplied = (e.material or '').strip()
+                booked = (e.booked_material or '').strip()
+                line_note = ''
+                if booked and supplied and booked.lower() != supplied.lower():
+                    line_note = f"Alternative supplied against original {booked} booking"
                 items.append({
-                    'name': name,
+                    'name': supplied,
                     'qty': e.qty,
-                    'price_at_time': inferred_rate
+                    'price_at_time': inferred_rate,
+                    'note': line_note,
                 })
         elif not items and getattr(invoice, 'direct_sales', None) and invoice.direct_sales:
             ds = invoice.direct_sales[0]
             # Preserve item rates so line amount matches invoice totals on first-open.
             items = _direct_sale_bill_lines(_direct_sale_display_items(ds))
+        supplied_totals = _direct_sale_supplied_totals(items)
         tx_code, tx_label, tx_note = _resolve_transaction_type('Invoice', invoice, entry_hint_id=entry_hint_id)
-        return render_template('view_bill.html', bill=invoice, type='Invoice', items=items, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, delivery_people=delivery_people, pk_now=pk_now)
+        return render_template('view_bill.html', bill=invoice, type='Invoice', items=items, supplied_totals=supplied_totals, client=client, client_balance=client_balance, previous_balance=previous_balance, recent_deliveries=recent_deliveries, material_ledger_recent=material_ledger_recent, material_stock_summary=material_stock_summary, clients=all_clients, materials=all_materials, transaction_type_code=tx_code, transaction_type_label=tx_label, transaction_type_note=tx_note, delivery_people=delivery_people, pk_now=pk_now)
     if grn:
         grn.amount = calculate_grn_total(grn) + (grn.discount or 0)
         grn.paid_amount = grn.paid_amount or 0

@@ -231,12 +231,19 @@ class DirectSaleDraft(db.Model):
 class DirectSaleItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sale_id = db.Column(db.Integer, db.ForeignKey('direct_sale.id'), nullable=False)
-    product_name = db.Column(db.String(100))
+    material_id = db.Column(db.Integer, db.ForeignKey('material.id'), nullable=True, index=True)
+    product_name = db.Column(db.String(100))  # Actual physically supplied material name
+    booked_material_id = db.Column(db.Integer, db.ForeignKey('material.id'), nullable=True, index=True)
+    booked_material = db.Column(db.String(100), nullable=True)  # Original booked material name (booking reference only)
+    is_booking = db.Column(db.Boolean, default=False)  # True when fulfilling an existing customer booking
+    is_alternate = db.Column(db.Boolean, default=False)  # True when supplied material differs from booked_material
     qty = db.Column(db.Float, default=0)
     price_at_time = db.Column(db.Float, default=0)
     grn_item_id = db.Column(db.Integer, db.ForeignKey('grn_item.id'), nullable=True)  # Link to specific GRN item
     cost_rate_at_sale = db.Column(db.Float, nullable=True)  # Frozen FIFO cost at post time
 
+    material = db.relationship('Material', foreign_keys=[material_id])
+    booked_material_obj = db.relationship('Material', foreign_keys=[booked_material_id])
     grn_item = db.relationship('GRNItem', backref='sale_items')
 
 

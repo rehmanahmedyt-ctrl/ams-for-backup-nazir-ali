@@ -319,15 +319,19 @@ def add_direct_sale():
             return _fail_sale(f'Alternate material is only allowed for booked items. "{mat_name}" has no booking balance.')
 
         if qty_booking > 0:
-            delivered_mat = alt_obj.name if alt_obj else mat_name
+            delivered_obj = alt_obj if alt_obj else mat_obj
+            delivered_mat = delivered_obj.name if delivered_obj else mat_name
+            is_alt_row = bool(alt_obj and delivered_mat != mat_name)
             processed_items.append({
+                'material_id': getattr(delivered_obj, 'id', None),
                 'product_name': delivered_mat,
+                'booked_material_id': getattr(mat_obj, 'id', None),
                 'booked_material': mat_name,
                 'qty': qty_booking,
                 'price_at_time': 0,
                 'grn_item_id': None,  # Booking items don't need GRN tracking
                 'is_booking': True,
-                'is_alternate': bool(alt_obj and delivered_mat != mat_name)
+                'is_alternate': is_alt_row,
             })
 
         if qty_sale > 0:
@@ -338,6 +342,7 @@ def add_direct_sale():
             # phantom negative movement on the original booked item).
             delivered_obj = alt_obj if alt_obj else mat_obj
             excess_mat_name = delivered_obj.name if delivered_obj else mat_name
+            is_alt_excess = bool(qty_booking > 0 and alt_obj and excess_mat_name != mat_name)
             if rate <= 0:
                 rate = float(getattr(delivered_obj, 'unit_price', 0) or 0)
             if rate <= 0:
@@ -349,13 +354,15 @@ def add_direct_sale():
                 except (ValueError, TypeError):
                     grn_item_id = None
             processed_items.append({
+                'material_id': getattr(delivered_obj, 'id', None),
                 'product_name': excess_mat_name,
-                'booked_material': None,
+                'booked_material_id': (getattr(mat_obj, 'id', None) if qty_booking > 0 else None),
+                'booked_material': (mat_name if qty_booking > 0 else None),
                 'qty': qty_sale,
                 'price_at_time': rate,
                 'grn_item_id': grn_item_id,
                 'is_booking': False,
-                'is_alternate': False
+                'is_alternate': is_alt_excess,
             })
             calculated_amount += (qty_sale * rate)
 
@@ -651,7 +658,12 @@ def add_direct_sale():
     for item in processed_items:
         # Create Sale Item
         dsi = DirectSaleItem(sale_id=sale.id,
+                           material_id=item.get('material_id'),
                            product_name=item['product_name'],
+                           booked_material_id=item.get('booked_material_id'),
+                           booked_material=item.get('booked_material'),
+                           is_booking=bool(item.get('is_booking')),
+                           is_alternate=bool(item.get('is_alternate')),
                            qty=item['qty'],
                            price_at_time=item['price_at_time'],
                            grn_item_id=item.get('grn_item_id'),
@@ -671,15 +683,19 @@ def add_direct_sale():
         elif category == 'Booking Delivery': # Fallback if main cat is Booking but this item isn't (shouldn't happen with split logic)
             item_category = 'Credit Customer'
 
+        is_booking_alt = bool(item.get('is_booking') and item.get('is_alternate'))
         entry_note = note
-        if item.get('is_booking') and item.get('is_alternate') and item.get('booked_material'):
+        if is_booking_alt and item.get('booked_material'):
             extra = f"Alternate Material for Booked Sale (Original: {item['booked_material']})"
+            entry_note = f"{note} | {extra}" if note else extra
+        elif (not item.get('is_booking')) and item.get('booked_material'):
+            extra = f"Additional quantity supplied beyond {item['booked_material']} booking"
             entry_note = f"{note} | {extra}" if note else extra
         entry = Entry(date=now.strftime('%Y-%m-%d'),
                       time=now.strftime('%H:%M:%S'),
                       type='OUT',
                       material=item['product_name'],
-                      booked_material=(item.get('booked_material') if item.get('is_alternate') else None),
+                      booked_material=(item.get('booked_material') if is_booking_alt else None),
                       client=client_name,
                       client_code=sale_client_code,
                       qty=item['qty'],
@@ -690,7 +706,7 @@ def add_direct_sale():
                       transaction_category=('Unbilled' if category == 'Cash' else 'Billed'),
                       driver_name=driver_name,
                       note=entry_note,
-                      is_alternate=bool(item.get('is_alternate')))
+                      is_alternate=is_booking_alt)
         _stamp_source(entry, 'sales', 'direct_sale', sale.id, ledger_bill_ref, item_category)
         db.session.add(entry)
 
