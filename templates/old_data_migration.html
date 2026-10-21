@@ -1,0 +1,78 @@
+{% extends 'layout.html' %}
+{% block content %}
+<div class="container-fluid py-2">
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-4">
+    <div>
+      <h2 class="mb-1"><i class="bi bi-database-add me-2"></i>Old Data Migration</h2>
+      <p class="text-muted mb-0">Upload one old AMS database. AMS tests the complete append on a separate copy before production can change.</p>
+    </div>
+    <span class="badge text-bg-success fs-6"><i class="bi bi-shield-check me-1"></i>Append only</span>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-xl-7">
+      <section class="card border-primary shadow-sm">
+        <div class="card-body p-4">
+          <h4 class="mb-3">Upload old AMS data</h4>
+          <form action="{{ url_for('legacy_migration.analyze') }}" method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+              <label class="form-label fw-semibold" for="oldDataFile">Old database file</label>
+              <input id="oldDataFile" class="form-control form-control-lg" type="file" name="file"
+                     accept=".amsdb,.db,.sqlite,.sqlite3" required>
+              <div class="form-text">Supported: verified AMS <code>.amsdb</code> and SQLite <code>.db</code> files, up to 1 GiB.</div>
+            </div>
+            <button class="btn btn-primary btn-lg w-100" type="submit">
+              <i class="bi bi-search me-1"></i>Upload &amp; run safety analysis
+            </button>
+          </form>
+        </div>
+      </section>
+    </div>
+
+    <div class="col-xl-5">
+      <section class="card h-100 border-secondary">
+        <div class="card-body p-4">
+          <h5><i class="bi bi-lock me-1"></i>Clear safety policy</h5>
+          <ul class="small text-muted ps-3 mb-0">
+            <li class="mb-2">Current business records are never updated or deleted.</li>
+            <li class="mb-2">Old IDs and relationships are remapped; they are never trusted directly.</li>
+            <li class="mb-2">Users, passwords, settings, sessions and locks are never copied.</li>
+            <li class="mb-2">Existing bill/name collisions receive a traceable old-source namespace.</li>
+            <li class="mb-2">Every transaction and dependency must pass current constraints.</li>
+            <li>Any ambiguity stops the complete run. Partial import is not allowed.</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card mt-4">
+    <div class="card-body p-4">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0">Migration history</h4>
+        <span class="text-muted small">Latest {{ runs|length }}</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead><tr><th>Created</th><th>File</th><th>Status</th><th>New rows</th><th>Existing changed</th><th></th></tr></thead>
+          <tbody>
+          {% for run in runs %}
+            {% set report = run.report or {} %}
+            <tr>
+              <td>{{ run.completed_at or run.created_at or '-' }}</td>
+              <td>{{ run.filename }}</td>
+              <td><span class="badge text-bg-{{ 'success' if run.status == 'COMPLETED' else 'primary' if run.status == 'READY' else 'secondary' }}">{{ run.status }}</span></td>
+              <td>{{ report.rows_inserted_total or 0 }}</td>
+              <td><strong class="text-success">{{ report.existing_business_rows_modified or 0 }}</strong></td>
+              <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="{{ url_for('legacy_migration.preview', token=run.token) }}">Open report</a></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-4">No old-data migration has been analyzed yet.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -42,3 +42,71 @@ class MigrationMapping(db.Model):
     run_id = db.Column(db.Integer, db.ForeignKey('migration_run.id'), nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=pk_model_now, nullable=False)
     __table_args__ = (db.UniqueConstraint('template_type', 'legacy_reference', name='uq_migration_legacy_mapping'),)
+
+
+# ---------------------------------------------------------------------------
+# Old Data Migration provenance
+# ---------------------------------------------------------------------------
+# These tables never hold business facts. They make the database-file append
+# idempotent while allowing the imported records themselves to live in the
+# normal current tables and remain fully editable.
+
+class OldDataSource(db.Model):
+    __tablename__ = 'old_data_source'
+    id = db.Column(db.Integer, primary_key=True)
+    source_key = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    origin_label = db.Column(db.String(500), nullable=False)
+    first_file_hash = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime, default=pk_model_now, nullable=False)
+
+
+class OldDataImportRun(db.Model):
+    __tablename__ = 'old_data_import_run'
+    id = db.Column(db.String(36), primary_key=True)
+    source_key = db.Column(db.String(64), nullable=False, index=True)
+    filename = db.Column(db.String(255))
+    file_hash = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.String(30), nullable=False, index=True)
+    rows_inserted = db.Column(db.Integer, nullable=False, default=0)
+    rows_skipped = db.Column(db.Integer, nullable=False, default=0)
+    report_json = db.Column(db.Text)
+    imported_by = db.Column(db.String(100))
+    created_at = db.Column(db.DateTime, default=pk_model_now, nullable=False)
+    completed_at = db.Column(db.DateTime)
+
+
+class OldDataRecordMap(db.Model):
+    __tablename__ = 'old_data_record_map'
+    id = db.Column(db.Integer, primary_key=True)
+    source_key = db.Column(db.String(64), nullable=False, index=True)
+    source_table = db.Column(db.String(100), nullable=False)
+    source_pk = db.Column(db.String(255), nullable=False)
+    target_table = db.Column(db.String(100), nullable=False)
+    target_pk = db.Column(db.String(255), nullable=False)
+    source_row_hash = db.Column(db.String(64), nullable=False)
+    import_run_id = db.Column(db.String(36), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=pk_model_now, nullable=False)
+    __table_args__ = (
+        db.UniqueConstraint(
+            'source_key', 'source_table', 'source_pk',
+            name='uq_old_data_record_source',
+        ),
+        db.Index('ix_old_data_record_target', 'target_table', 'target_pk'),
+    )
+
+
+class OldDataReferenceMap(db.Model):
+    __tablename__ = 'old_data_reference_map'
+    id = db.Column(db.Integer, primary_key=True)
+    source_key = db.Column(db.String(64), nullable=False, index=True)
+    reference_kind = db.Column(db.String(40), nullable=False)
+    original_value = db.Column(db.String(255), nullable=False)
+    current_value = db.Column(db.String(255), nullable=False)
+    import_run_id = db.Column(db.String(36), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=pk_model_now, nullable=False)
+    __table_args__ = (
+        db.UniqueConstraint(
+            'source_key', 'reference_kind', 'original_value',
+            name='uq_old_data_reference_source',
+        ),
+    )

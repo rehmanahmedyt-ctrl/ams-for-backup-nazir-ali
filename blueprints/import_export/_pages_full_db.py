@@ -13,8 +13,9 @@ a whole accounting database):
         the current database is backed up automatically, EVERY data row of the
         current database is deleted first ("clean all data in AMS"),
         then every row of the uploaded file is inserted with its original
-        primary keys.  Mode 'append' instead keeps existing rows and only
-        inserts new primary keys.
+        primary keys. Raw append is deliberately refused by this route; merging
+        two populated relational graphs must use Old Data Migration, which
+        remaps identities and validates on a clone first.
 
     GET  /import_export/full_db_import_report/<report_name>
         Downloads the JSON report of a previous full-db import.
@@ -149,7 +150,17 @@ def full_db_import():
         return redirect(url_for("import_export.import_export_page"))
 
     mode = (request.form.get("mode") or "clean_replace").strip().lower()
-    if mode not in ("clean_replace", "append"):
+    if mode == "append":
+        # Raw primary-key append cannot safely merge two live relational graphs.
+        # The dedicated Old Data Migration performs ID/FK remapping, clone-first
+        # analysis, provenance and atomic verification instead.
+        flash(
+            "Raw snapshot append is disabled for safety. Use Old Data Migration "
+            "to append an old .amsdb/.db without overwriting current records.",
+            "warning",
+        )
+        return redirect(url_for("legacy_migration.dashboard"))
+    if mode != "clean_replace":
         mode = "clean_replace"
 
     db_path = _target_db_path()
