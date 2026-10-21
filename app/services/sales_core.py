@@ -802,12 +802,11 @@ def _rent_reconciliation_from_items(items, delivery_rent_cost=0, client_name=Non
 
 
 def _direct_sale_booked_material_by_item(sale_item_ids):
-    """sale_item_id -> booked material name, from active booking allocations.
+    """sale_item_id -> booked material name, from active booking allocations
+    or explicit DirectSaleItem booking metadata.
 
-    The booking allocations are the durable record of *which* booking a direct
-    sale line fulfilled, so they are the right source for rebuilding the
-    booked-material identity (the old heuristic scanned the previous entry
-    rows, which loses the link as soon as the quantity is edited).
+    Booking allocations and DirectSaleItem.booked_material (with is_booking=True)
+    record *which* booking a direct-sale line fulfilled without fragile qty matching.
     """
     ids = [i for i in (sale_item_ids or []) if i]
     if not ids:
@@ -826,6 +825,20 @@ def _direct_sale_booked_material_by_item(sale_item_ids):
         name = (material_name or '').strip()
         if name and sale_item_id not in out:
             out[sale_item_id] = name
+    missing = [i for i in ids if i not in out]
+    if missing:
+        item_rows = db.session.query(
+            DirectSaleItem.id,
+            DirectSaleItem.booked_material,
+        ).filter(
+            DirectSaleItem.id.in_(missing),
+            DirectSaleItem.is_booking == True,
+            DirectSaleItem.booked_material.isnot(None),
+        ).all()
+        for item_id, booked_mat in item_rows:
+            name = (booked_mat or '').strip()
+            if name and item_id not in out:
+                out[item_id] = name
     return out
 
 
@@ -860,23 +873,33 @@ def _direct_sale_booked_material_from_entries(sale_ids):
     return out
 
 
+def _format_supplied_material_label(product, booked_material=None):
+    """Display label that ALWAYS names the physically supplied material first."""
+    supplied = (product or '').strip()
+    booked = (booked_material or '').strip()
+    if booked and supplied and booked.lower() != supplied.lower():
+        return f"{supplied} (Alt against {booked} booking)"
+    return supplied
+
+
 def _direct_sale_display_items(sale, booked_by_item=None):
-    """Render one direct-sale line per row the user actually entered.
+    """Build logical entered rows for Direct Sales list & Edit sheet.
 
-    A row typed as *(booked material + alternate material + qty above the
-    booking + a rate for the excess)* is stored internally as two source
-    lines — a rate-0 booked slice and a rate>0 due slice — because booking
-    consumption and stock movement are tracked per slice.  That split is an
-    implementation detail of the ledger, never an extra row the user asked
-    for, so every screen and every bill collapses it back into ONE row:
+    A row entered as *(booked material + optional alternate material + total qty
+    exceeding booking + rate for excess)* is stored in ``direct_sale_item`` as
+    explicit separate slices:
+      1. ``is_booking=True`` slice: ``product_name`` = actual supplied material,
+         ``booked_material`` = original booked material, ``qty`` = fulfilled
+         booking qty, ``price_at_time = 0``.
+      2. ``is_booking=False`` slice(s): ``product_name`` = actual supplied
+         material, ``booked_material`` = original booked material, ``qty`` =
+         excess qty beyond booking, ``price_at_time = rate``.
 
-    * ``qty``          total physical dispatch (booked + due),
-    * ``booked_qty``   the part covered by the booking (deducted from booking),
-    * ``due_qty``      the chargeable excess — the ONLY part that is due,
-    * ``bill_qty``     the quantity a bill/invoice line must charge for
-                      (``due_qty`` on a mixed row, never the full dispatch),
-    * ``rate``         the rate entered for the excess,
-    * ``amount``       what is actually charged for the row (excess x rate).
+    For the Direct Sales table and Edit sheet this function reconstructs one
+    logical form row per entered row, always naming the physically supplied
+    material first (never the unshipped booked material).  For bills/invoices,
+    :func:`_direct_sale_bill_lines` emits explicit separate lines for the
+    booking-fulfilled slice and the excess slice plus total supplied summary.
     """
     if not sale:
         return []
@@ -896,11 +919,11 @@ def _direct_sale_display_items(sale, booked_by_item=None):
             if booked:
                 booked_by_item[item.id] = booked
 
-    def _new_group(item, product, qty, rate, booked):
+    def _new_group(item, product, qty, rate, booked, is_booking_slice):
         # A booked slice is always rate 0.  If legacy data carries a price on
         # an allocated line, charge the full quantity rather than dropping the
         # money (the label still shows the booking it consumed).
-        free_portion = bool(booked) and float(rate or 0) <= 0
+        free_portion = bool(is_booking_slice) and float(rate or 0) <= 0
         return {
             'name': product,
             'material': product,
@@ -922,15 +945,18 @@ def _direct_sale_display_items(sale, booked_by_item=None):
             continue
         qty = float(item.qty or 0)
         rate = float(item.price_at_time or 0)
-        booked = (booked_by_item.get(item.id) or '').strip() or None
+        explicit_booked = (getattr(item, 'booked_material', None) or '').strip() or None
+        alloc_booked = (booked_by_item.get(item.id) or '').strip() or None
+        is_booking_flag = bool(getattr(item, 'is_booking', False)) or bool(alloc_booked)
+        booked = alloc_booked or explicit_booked
         prev = groups[-1] if groups else None
 
-        if booked:
-            groups.append(_new_group(item, product, qty, rate, booked))
+        if is_booking_flag:
+            groups.append(_new_group(item, product, qty, rate, booked or product, True))
             continue
 
-        # A chargeable slice immediately following the booked slice of the same
-        # delivered material belongs to the same entered row.
+        # A chargeable excess slice immediately following the booked slice of
+        # the same supplied material belongs to the same entered form row.
         if prev and prev['material'] == product and prev['booked_material']:
             if prev['due_qty'] <= 0:
                 prev['due_qty'] = qty
@@ -942,7 +968,7 @@ def _direct_sale_display_items(sale, booked_by_item=None):
                 prev['sale_item_ids'].append(item.id)
                 continue
             if abs(float(prev['rate'] or 0) - rate) <= 1e-9:
-                # FIFO lot split of the same due slice.
+                # FIFO lot split of the same excess slice.
                 prev['due_qty'] = float(prev['due_qty']) + qty
                 prev['qty'] = float(prev['qty']) + qty
                 prev['amount'] = float(prev['amount']) + qty * rate
@@ -960,21 +986,17 @@ def _direct_sale_display_items(sale, booked_by_item=None):
                 prev['grn_item_id'] = item.grn_item_id
             continue
 
-        groups.append(_new_group(item, product, qty, rate, None))
+        groups.append(_new_group(item, product, qty, rate, explicit_booked, False))
 
     for group in groups:
         booked = group['booked_material']
         product = group['material']
-        if booked and booked.strip().lower() != product.strip().lower():
-            group['name'] = f"{booked.strip()} > ALT > {product}"
-        else:
-            group['name'] = product
+        is_alt = bool(booked and booked.strip().lower() != product.strip().lower())
+        group['is_alternate'] = is_alt
+        group['name'] = _format_supplied_material_label(product, booked)
         group['is_booked_row'] = bool(group['booked_qty']) and group['due_qty'] <= 0
         group['is_due_row'] = group['due_qty'] > 0
         group['is_mixed_row'] = bool(group['booked_qty']) and group['due_qty'] > 0
-        # A bill/invoice line charges ONLY the excess.  The booked part was
-        # already paid for through the booking, so printing the full dispatch
-        # quantity against the rate reads as "the whole qty is due".
         group['bill_qty'] = group['due_qty'] if group['is_mixed_row'] else group['qty']
         group['qty_text'] = _qty_text(group['qty'])
         group['booked_qty_text'] = _qty_text(group['booked_qty'])
@@ -999,36 +1021,152 @@ def _direct_sale_display_items(sale, booked_by_item=None):
                 f"only the {due_txt} excess is charged"
             )
         elif group['is_booked_row']:
-            group['note'] = 'Booked'
-            group['note_detail'] = 'Booked'
-            group['bill_note'] = 'Booked'
+            if is_alt:
+                alt_note = f"Alternative supplied against original {booked.strip()} booking"
+                group['note'] = alt_note
+                group['note_detail'] = alt_note
+                group['bill_note'] = alt_note
+            else:
+                group['note'] = 'Booked'
+                group['note_detail'] = 'Booked'
+                group['bill_note'] = 'Booked'
             group['split_note'] = (
                 f"fully covered by booking ({_fmt_qty_for_note(group['booked_qty'])}) — nothing is due"
             )
     return groups
 
 
-def _direct_sale_bill_lines(rows):
-    """Bill/invoice payload for already-collapsed display rows.
+def _direct_sale_bill_lines(rows_or_sale):
+    """Build accurate bill/invoice line items naming the physically supplied material.
 
-    The quantity printed on a bill is the **chargeable** quantity: on a
-    booked + excess row that is the excess only, because the booked quantity
-    was settled with the booking and must never show up as due again.  The
-    booked part stays visible in the line note so the customer can still see
-    what physically left the yard.
+    Rules enforced:
+    * ``name`` is ALWAYS the physically supplied material (e.g. ``20 mm steel``),
+      never the original booked material (e.g. ``12 mm steel``).
+    * When a delivery combines a booking-fulfilled quantity and an additional
+      excess quantity beyond the booking, two explicit lines are emitted:
+        1. ``<supplied material>`` | ``<booked_qty>`` | ``0`` | ``0``
+           Note: ``Alternative supplied against original <booked_material> booking``
+           (or ``Supplied against booking`` when same material).
+        2. ``<supplied material>`` | ``<due_qty>`` | ``<rate>`` | ``<due_qty * rate>``
+           Note: ``Additional quantity supplied beyond booking``
+    * Pure booking deliveries emit the ``<booked_qty>`` line with ``amount = 0``
+      and clear description; normal cash/credit sales emit the single chargeable
+      line with no clutter.
     """
+    if isinstance(rows_or_sale, DirectSale):
+        rows = _direct_sale_display_items(rows_or_sale)
+    else:
+        rows = list(rows_or_sale or [])
+
+    bill_lines = []
+    for row in rows:
+        supplied = (row.get('material') or row.get('name') or '').strip()
+        booked_mat = (row.get('booked_material') or '').strip() or None
+        is_alt = bool(booked_mat and supplied and booked_mat.lower() != supplied.lower())
+        booked_qty = float(row.get('booked_qty') or 0)
+        due_qty = float(row.get('due_qty') or 0)
+        total_qty = float(row.get('qty') or 0)
+        rate = float(row.get('rate') if 'rate' in row else (row.get('price_at_time') or 0))
+        amount = float(row.get('amount') or 0)
+
+        if booked_qty > 0 and due_qty > 0:
+            booking_desc = (
+                f"Alternative supplied against original {booked_mat} booking"
+                if is_alt
+                else "Supplied against booking"
+            )
+            bill_lines.append({
+                'name': supplied,
+                'material': supplied,
+                'booked_material': booked_mat,
+                'is_booking': True,
+                'is_alternate': is_alt,
+                'qty': booked_qty,
+                'price_at_time': 0.0,
+                'amount': 0.0,
+                'note': booking_desc,
+                'booked_qty': booked_qty,
+                'due_qty': 0.0,
+                'dispatch_qty': booked_qty,
+            })
+            bill_lines.append({
+                'name': supplied,
+                'material': supplied,
+                'booked_material': booked_mat,
+                'is_booking': False,
+                'is_alternate': is_alt,
+                'qty': due_qty,
+                'price_at_time': rate,
+                'amount': amount,
+                'note': 'Additional quantity supplied beyond booking',
+                'booked_qty': 0.0,
+                'due_qty': due_qty,
+                'dispatch_qty': due_qty,
+            })
+        elif booked_qty > 0:
+            booking_desc = (
+                f"Alternative supplied against original {booked_mat} booking"
+                if is_alt
+                else 'Booked'
+            )
+            bill_lines.append({
+                'name': supplied,
+                'material': supplied,
+                'booked_material': booked_mat,
+                'is_booking': True,
+                'is_alternate': is_alt,
+                'qty': booked_qty,
+                'price_at_time': 0.0,
+                'amount': 0.0,
+                'note': booking_desc,
+                'booked_qty': booked_qty,
+                'due_qty': 0.0,
+                'dispatch_qty': booked_qty,
+            })
+        else:
+            line_qty = due_qty if due_qty > 0 else total_qty
+            extra_note = 'Additional quantity supplied beyond booking' if booked_mat else ''
+            bill_lines.append({
+                'name': supplied,
+                'material': supplied,
+                'booked_material': booked_mat,
+                'is_booking': False,
+                'is_alternate': is_alt,
+                'qty': line_qty,
+                'price_at_time': rate,
+                'amount': amount,
+                'note': extra_note,
+                'booked_qty': 0.0,
+                'due_qty': line_qty,
+                'dispatch_qty': line_qty,
+            })
+    return bill_lines
+
+
+def _direct_sale_supplied_totals(bill_lines):
+    """Per-material total physical supplied quantity when a material spans multiple bill lines."""
+    totals = {}
+    counts = {}
+    labels = {}
+    for line in (bill_lines or []):
+        mat = (
+            (line.get('name') if isinstance(line, dict) else getattr(line, 'name', None))
+            or (line.get('material') if isinstance(line, dict) else getattr(line, 'product_name', None))
+            or ''
+        ).strip()
+        if not mat:
+            continue
+        qty = float((line.get('qty') if isinstance(line, dict) else getattr(line, 'qty', 0)) or 0)
+        if qty <= 0:
+            continue
+        key = mat.lower()
+        labels.setdefault(key, mat)
+        totals[key] = totals.get(key, 0.0) + qty
+        counts[key] = counts.get(key, 0) + 1
     return [
-        {
-            'name': row['name'],
-            'qty': row.get('bill_qty', row['qty']),
-            'price_at_time': row['rate'],
-            'amount': row['amount'],
-            'note': row.get('bill_note') or row.get('note') or '',
-            'booked_qty': row['booked_qty'],
-            'due_qty': row['due_qty'],
-            'dispatch_qty': row['qty'],
-        }
-        for row in (rows or [])
+        {'material': labels[k], 'qty': totals[k]}
+        for k in labels
+        if counts.get(k, 0) > 1
     ]
 
 

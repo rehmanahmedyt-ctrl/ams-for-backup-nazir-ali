@@ -457,13 +457,23 @@
                 <tr>
                     <td class="text-start fw-bold">
                         {{ item.name or item.material_name or item.product_name or item.mat_name }}
-                        {% if item.note is defined and item.note %}<div class="text-white-50" style="font-size:0.72rem;font-weight:500;">{{ item.note }}</div>{% endif %}
+                        {% if item.note is defined and item.note %}<div style="font-size:0.75rem;font-weight:500;color:#333;">{{ item.note }}</div>{% endif %}
                     </td>
                     <td class="text-end">{{ fmt_num(item.qty) }}</td>
                     <td class="text-end">{{ fmt_num(item.price_at_time) }}</td>
                     <td class="text-end">{{ fmt_num(line_amount) }}</td>
                 </tr>
                 {% endfor %}
+                {% if supplied_totals is defined and supplied_totals %}
+                {% for st in supplied_totals %}
+                <tr style="border-top:1px dashed #666; background:#f8f9fa;">
+                    <td class="text-start fw-bold">Total {{ st.material }} supplied</td>
+                    <td class="text-end fw-bold">{{ fmt_num(st.qty) }}</td>
+                    <td class="text-end"></td>
+                    <td class="text-end"></td>
+                </tr>
+                {% endfor %}
+                {% endif %}
                 {% if not items and type == 'Payment' %}
                 <tr>
                     <td colspan="4" class="text-center" style="padding:6px; font-style:italic;">

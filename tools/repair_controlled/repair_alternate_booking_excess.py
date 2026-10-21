@@ -72,6 +72,7 @@ def _args():
         help="Apply the fixes (takes a backup first)",
     )
     args = parser.parse_args()
+    args.database = args.database.expanduser().resolve()
     if args.confirm and not args.sale_id.strip():
         parser.error("--confirm requires --sale-id (one or more comma-separated sale ids)")
     if not args.database.exists():
@@ -93,19 +94,18 @@ def _ids(raw: str) -> list[int]:
 
 
 def _load_app(database: Path):
-    """Bind the ORM to *database* without booting the web app.
-
-    A bare Flask app is enough for the models + rebuild helpers and, unlike
-    ``create_app()``, it cannot apply migrations, start the backup scheduler or
-    touch any other runtime hook.  Dry runs are therefore truly read-only.
-    """
+    """Bind the ORM to *database* without booting the web app."""
     from flask import Flask
     from models import db
+    from app.services.schema import _ensure_model_columns
 
+    resolved = Path(database).expanduser().resolve()
     flask_app = Flask(__name__)
-    flask_app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{database}"
+    flask_app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{resolved}"
     flask_app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     db.init_app(flask_app)
+    with flask_app.app_context():
+        _ensure_model_columns()
     return flask_app
 
 
@@ -120,7 +120,7 @@ def _active_entries(sale):
 
 
 def _alternate_map(sale):
-    """booked material -> delivered material, from this sale's own booking lines."""
+    """booked material -> (booked, delivered, booking_sale_item_id), from allocations + entries."""
     from models import BookingAllocation, BookingItem
     mapping = {}
     rows = db_session().query(
@@ -145,6 +145,28 @@ def _alternate_map(sale):
         delivered = delivered_by_item.get(booked.lower())
         if delivered:
             mapping[booked.lower()] = (booked, delivered, sale_item_id)
+
+    # Legacy fallback for sales recorded before booking_allocation existed:
+    # match the active Booking Delivery OUT entry with e.booked_material against
+    # the rate-0 DirectSaleItem carrying the delivered alternate material.
+    for booked_lower, delivered in delivered_by_item.items():
+        if booked_lower in mapping:
+            continue
+        booked_orig = next(
+            (
+                (e.booked_material or "").strip()
+                for e in _active_entries(sale)
+                if (e.booked_material or "").strip().lower() == booked_lower
+            ),
+            "",
+        )
+        matched_item_id = None
+        for it in (sale.items or []):
+            if float(it.price_at_time or 0) <= 0 and (it.product_name or "").strip().lower() == delivered.lower():
+                matched_item_id = it.id
+                break
+        if booked_orig and matched_item_id is not None:
+            mapping[booked_lower] = (booked_orig, delivered, matched_item_id)
     return mapping
 
 
@@ -171,7 +193,12 @@ def _candidates(sale):
             continue
         if name.lower() == delivered.lower():
             continue
-        out.append({"item": item, "booked": booked, "delivered": delivered})
+        out.append({
+            "item": item,
+            "booked": booked,
+            "delivered": delivered,
+            "booking_sale_item_id": booking_sale_item_id,
+        })
     return out
 
 
@@ -198,44 +225,21 @@ def _describe(sale, candidates):
 
 
 def main() -> int:
-    args = _args()
-    app = _load_app(args.database)
+    import shutil
+    import tempfile
 
-    from models import DirectSale, Material
+    args = _args()
+    from models import DirectSale, DirectSaleItem, Material
     from app.services.void_rebuild import rebuild_direct_sale_effects
 
-    with app.app_context():
-        if args.sale_id.strip():
-            sales = DirectSale.query.filter(DirectSale.id.in_(_ids(args.sale_id))).order_by(DirectSale.id).all()
-        else:
-            sales = DirectSale.query.filter(
-                DirectSale.is_void == False,  # noqa: E712
-                DirectSale.category == "Mixed Transaction",
-            ).order_by(DirectSale.id).all()
-
-        found = []
-        for sale in sales:
-            cands = _candidates(sale)
-            if cands:
-                found.append((sale, cands))
-
-        if not found:
-            print("No alternate-booking excess rows found. Nothing to repair.")
-            return 0
-
-        print(f"{'DRY RUN — no changes written.' if not args.confirm else 'REPAIR MODE'}")
-        print(f"Candidate sales: {len(found)}\n")
-
-        before = {m.name: float(m.total or 0) for m in Material.query.all()}
-        for sale, cands in found:
-            _describe(sale, cands)
-        print()
-
-        if not args.confirm:
-            print("Re-run with --sale-id <id> --confirm to apply (backup is taken first).")
-            return 0
-
-        # Guarded write path: backup + audit log before the first mutation.
+    tmp_ctx = None
+    work_db = args.database
+    if not args.confirm:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="ams_alt_excess_dryrun_")
+        work_db = Path(tmp_ctx.name) / args.database.name
+        shutil.copy2(args.database, work_db)
+    else:
+        # Guarded write path: take backup + audit log BEFORE opening/mutating DB.
         from tools.repair_controlled.repair_guard import preflight
         preflight(
             script_name=__file__,
@@ -244,22 +248,78 @@ def main() -> int:
             backup_dir=args.database.parent / "reconcile_backups",
         )
 
-        touched = set()
-        for sale, cands in found:
-            for c in cands:
-                c["item"].product_name = c["delivered"]
-                touched.add(c["booked"])
-                touched.add(c["delivered"])
-            db_session().flush()
-            rebuild_direct_sale_effects(sale, rebuild_stock=True)
-        db_session().commit()
+    try:
+        app = _load_app(work_db)
+        with app.app_context():
+            if args.sale_id.strip():
+                sales = DirectSale.query.filter(DirectSale.id.in_(_ids(args.sale_id))).order_by(DirectSale.id).all()
+            else:
+                sales = DirectSale.query.filter(
+                    DirectSale.is_void == False,  # noqa: E712
+                    DirectSale.category == "Mixed Transaction",
+                ).order_by(DirectSale.id).all()
 
-        after = {m.name: float(m.total or 0) for m in Material.query.all()}
-        _pretty(f"Stock corrections applied to {len(found)} sale(s):", before, after, sorted(touched))
-        for sale, cands in found:
-            bill = sale.manual_bill_no or sale.auto_bill_no or f"DS-{sale.id}"
-            print(f"  repaired sale #{sale.id} ({bill}) — {len(cands)} due line(s)")
-        print("\nDone. Reopen the affected bills in the app to confirm.")
+            found = []
+            for sale in sales:
+                cands = _candidates(sale)
+                if cands:
+                    found.append((sale, cands))
+
+            if not found:
+                print("No alternate-booking excess rows found. Nothing to repair.")
+                return 0
+
+            print(f"{'DRY RUN — no changes written.' if not args.confirm else 'REPAIR MODE'}")
+            print(f"Candidate sales: {len(found)}\n")
+
+            before = {m.name: float(m.total or 0) for m in Material.query.all()}
+            for sale, cands in found:
+                _describe(sale, cands)
+            print()
+
+            if not args.confirm:
+                print("Re-run with --sale-id <id> --confirm to apply (backup is taken first).")
+                return 0
+
+            mat_by_lower = {
+                (m.name or "").strip().lower(): m
+                for m in Material.query.all()
+                if (m.name or "").strip()
+            }
+            touched = set()
+            for sale, cands in found:
+                for c in cands:
+                    delivered_mat = mat_by_lower.get(c["delivered"].strip().lower())
+                    booked_mat = mat_by_lower.get(c["booked"].strip().lower())
+                    item = c["item"]
+                    item.product_name = c["delivered"]
+                    item.material_id = delivered_mat.id if delivered_mat else item.material_id
+                    item.booked_material = c["booked"]
+                    item.booked_material_id = booked_mat.id if booked_mat else item.booked_material_id
+                    item.is_booking = False
+                    item.is_alternate = True
+                    booking_item = db_session().get(DirectSaleItem, c.get("booking_sale_item_id")) if c.get("booking_sale_item_id") else None
+                    if booking_item is not None:
+                        booking_item.material_id = delivered_mat.id if delivered_mat else booking_item.material_id
+                        booking_item.booked_material = c["booked"]
+                        booking_item.booked_material_id = booked_mat.id if booked_mat else booking_item.booked_material_id
+                        booking_item.is_booking = True
+                        booking_item.is_alternate = True
+                    touched.add(c["booked"])
+                    touched.add(c["delivered"])
+                db_session().flush()
+                rebuild_direct_sale_effects(sale, rebuild_stock=True)
+            db_session().commit()
+
+            after = {m.name: float(m.total or 0) for m in Material.query.all()}
+            _pretty(f"Stock corrections applied to {len(found)} sale(s):", before, after, sorted(touched))
+            for sale, cands in found:
+                bill = sale.manual_bill_no or sale.auto_bill_no or f"DS-{sale.id}"
+                print(f"  repaired sale #{sale.id} ({bill}) — {len(cands)} due line(s)")
+            print("\nDone. Reopen the affected bills in the app to confirm.")
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
     return 0
 
 

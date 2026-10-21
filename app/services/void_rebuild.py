@@ -1711,8 +1711,10 @@ def _void_direct_sale_entries_and_restore_stock(sale, refs=None, client_code=Non
         if e.is_void:
             continue
         e.is_void = True
-        stock_name = e.booked_material if (e.is_alternate and e.booked_material) else e.material
-        mat = Material.query.filter_by(name=stock_name).first()
+        # e.material ALWAYS stores the physically dispatched stock material
+        # (e.g. 20 mm steel), whereas e.booked_material is only the booking
+        # balance reference (e.g. 12 mm steel). Always restore physical stock.
+        mat = Material.query.filter_by(name=e.material).first()
         if mat:
             if e.type == 'OUT':
                 mat.total = (mat.total or 0) + (e.qty or 0)
@@ -1732,8 +1734,7 @@ def _unvoid_direct_sale_entries_and_apply_stock(sale, refs=None, client_code=Non
     for e in entries:
         if not e.is_void:
             continue
-        stock_name = e.booked_material if (e.is_alternate and e.booked_material) else e.material
-        mat = Material.query.filter_by(name=stock_name).first()
+        mat = Material.query.filter_by(name=e.material).first()
         if mat:
             if e.type == 'OUT':
                 mat.total = (mat.total or 0) - (e.qty or 0)
@@ -1831,15 +1832,24 @@ def _active_direct_sale_items_generate_entries(sale, refs=None, client_code=None
         if qty <= 0:
             continue
         price = float(item.price_at_time or 0)
-        item_category = _direct_sale_item_category(category, price)
+        explicit_is_booking = bool(getattr(item, 'is_booking', False))
+        item_category = 'Booking Delivery' if (explicit_is_booking and price <= 0) else _direct_sale_item_category(category, price)
         if item_category != 'Booking Delivery' and price <= 0:
             continue
         inferred_booked_material = None
         if item_category == 'Booking Delivery':
-            inferred_booked_material = booked_by_item.get(item.id)
+            inferred_booked_material = (
+                booked_by_item.get(item.id)
+                or (getattr(item, 'booked_material', None) or '').strip()
+                or None
+            )
             if not inferred_booked_material:
                 inferred_booked_material = _take_old_booked_material(item.product_name, qty)
-        is_alt = bool(inferred_booked_material and inferred_booked_material != item.product_name)
+        is_alt = bool(
+            inferred_booked_material
+            and (item.product_name or '').strip()
+            and inferred_booked_material.strip().lower() != (item.product_name or '').strip().lower()
+        )
         row = Entry(
             date=now.strftime('%Y-%m-%d'),
             time=now.strftime('%H:%M:%S'),
@@ -2154,18 +2164,44 @@ def rebuild_direct_sale_effects(sale, *, old_refs=None, old_client_code=None, ol
 
     desired = []
     if active_source:
+        booked_by_item = _direct_sale_booked_material_by_item(
+            [it.id for it in (sale.items or []) if it.id]
+        )
         for item in sale.items or []:
             qty = float(item.qty or 0)
             if qty <= 0:
                 continue
             price = float(item.price_at_time or 0)
-            item_category = _direct_sale_item_category(category, price)
+            explicit_is_booking = bool(getattr(item, 'is_booking', False))
+            item_category = 'Booking Delivery' if (explicit_is_booking and price <= 0) else _direct_sale_item_category(category, price)
             if item_category != 'Booking Delivery' and price <= 0:
                 continue
-            desired.append(((item.product_name or '').strip(), round(qty, 6), item_category))
+            booked_mat = ''
+            is_alt = False
+            if item_category == 'Booking Delivery':
+                bm = (
+                    booked_by_item.get(item.id)
+                    or (getattr(item, 'booked_material', None) or '').strip()
+                )
+                if bm and bm.strip().lower() != (item.product_name or '').strip().lower():
+                    booked_mat = bm.strip()
+                    is_alt = True
+            desired.append((
+                (item.product_name or '').strip(),
+                round(qty, 6),
+                item_category,
+                booked_mat,
+                is_alt,
+            ))
 
     existing_sig = [
-        ((e.material or '').strip(), round(float(e.qty or 0), 6), e.client_category or '')
+        (
+            (e.material or '').strip(),
+            round(float(e.qty or 0), 6),
+            e.client_category or '',
+            (e.booked_material or '').strip() if e.is_alternate else '',
+            bool(e.is_alternate),
+        )
         for e in stale_entries
     ]
     if active_source and sorted(existing_sig) == sorted(desired):

@@ -185,6 +185,31 @@ def run_sql_migrations(migrations_root=None, db_path=None,
 
     con = _open_db(db_path)
     try:
+        # Ensure columns referenced by 0002+ exist even when run_sql_migrations
+        # is invoked standalone against an un-bootstrapped pre-migration DB.
+        existing_tables = {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "direct_sale_item" in existing_tables:
+            existing_cols = {
+                r[1]
+                for r in con.execute("PRAGMA table_info(direct_sale_item)").fetchall()
+            }
+            for col_name, col_ddl in (
+                ("material_id", "INTEGER"),
+                ("booked_material_id", "INTEGER"),
+                ("booked_material", "VARCHAR(100)"),
+                ("is_booking", "BOOLEAN DEFAULT 0"),
+                ("is_alternate", "BOOLEAN DEFAULT 0"),
+            ):
+                if col_name not in existing_cols:
+                    con.execute(
+                        f"ALTER TABLE direct_sale_item ADD COLUMN {col_name} {col_ddl}"
+                    )
+
         applied = _applied_history(con)
         pending = [f for f in files if f not in applied]
         applied_count = 0

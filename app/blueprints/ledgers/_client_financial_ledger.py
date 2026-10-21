@@ -488,7 +488,7 @@ def financial_ledger(client_id):
             group_mat = d.booked_material or d.material
             display_mat = group_mat
             if d.booked_material and d.material and d.booked_material != d.material:
-                display_mat = f"{d.booked_material}>ALT>{d.material}"
+                display_mat = f"{d.material} (Alt against {d.booked_material} booking)"
             date_sort = None
             try:
                 if d.date and d.time:
@@ -550,12 +550,20 @@ def financial_ledger(client_id):
                 continue
 
             date_sort = s.date_posted if s.date_posted else None
+            booked_mat = (getattr(item, 'booked_material', None) or '').strip()
+            supplied_mat = (item.product_name or '').strip()
+            group_mat = booked_mat or supplied_mat
+            display_mat = (
+                f"{supplied_mat} (Alt against {booked_mat} booking)"
+                if (booked_mat and supplied_mat and booked_mat.lower() != supplied_mat.lower())
+                else group_mat
+            )
             material_history.append({
                 'date': s.date_posted.strftime('%Y-%m-%d') if s.date_posted else '',
                 'date_sort': date_sort,
-                'material': item.product_name,
-                'material_group': item.product_name,
-                'material_display': item.product_name,
+                'material': group_mat,
+                'material_group': group_mat,
+                'material_display': display_mat,
                 'qty_added': 0,
                 'qty_dispatched': item.qty,
                 'bill_no': bill_ref,

@@ -35,7 +35,8 @@ def view_bill_detail(type, id):
     else:
         return "Invalid Bill Type", 400
 
+    supplied_totals = _direct_sale_supplied_totals(items) if type == 'DirectSale' else []
     all_clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
     all_materials = Material.query.order_by(Material.name.asc()).all()
-    return render_template('view_bill.html', bill=bill, type=type, items=items, clients=all_clients, materials=all_materials, pk_now=pk_now)
+    return render_template('view_bill.html', bill=bill, type=type, items=items, supplied_totals=supplied_totals, clients=all_clients, materials=all_materials, pk_now=pk_now)
 

@@ -317,7 +317,8 @@ def edit_direct_sale(id):
             if category in ['Cash', 'Credit Customer', 'Open Khata']:
                 ignore_flag = True
 
-            delivered_name = alt_obj.name if alt_obj else mat_obj.name
+            delivered_obj = alt_obj if alt_obj else mat_obj
+            delivered_name = delivered_obj.name
             is_alt = bool(alt_obj and delivered_name != mat_obj.name)
 
             # Split the row: the booked quantity is a rate-0 reservation
@@ -356,8 +357,10 @@ def edit_direct_sale(id):
 
             if qty_booking > 0:
                 parsed_items.append({
+                    'material_id': getattr(delivered_obj, 'id', None),
                     'product_name': delivered_name,
-                    'booked_material': mat_obj.name if is_alt else None,
+                    'booked_material_id': getattr(mat_obj, 'id', None),
+                    'booked_material': mat_obj.name,
                     'qty': qty_booking,
                     'price_at_time': 0,
                     'grn_item_id': None,
@@ -371,13 +374,15 @@ def edit_direct_sale(id):
                 if effective_rate <= 0:
                     effective_rate = float((alt_obj if is_alt else mat_obj).unit_price or 0)
                 parsed_items.append({
+                    'material_id': getattr(delivered_obj, 'id', None),
                     'product_name': delivered_name,
-                    'booked_material': None,
+                    'booked_material_id': (getattr(mat_obj, 'id', None) if qty_booking > 0 else None),
+                    'booked_material': (mat_obj.name if qty_booking > 0 else None),
                     'qty': qty_sale,
                     'price_at_time': effective_rate,
                     'grn_item_id': grn_item_id,
                     'is_booking': False,
-                    'is_alternate': False,
+                    'is_alternate': bool(is_alt and qty_booking > 0),
                 })
 
         if not parsed_items:
@@ -547,7 +552,12 @@ def edit_direct_sale(id):
         for item in parsed_items:
             dsi = DirectSaleItem(
                 sale_id=sale.id,
+                material_id=item.get('material_id'),
                 product_name=item['product_name'],
+                booked_material_id=item.get('booked_material_id'),
+                booked_material=item.get('booked_material'),
+                is_booking=bool(item.get('is_booking')),
+                is_alternate=bool(item.get('is_alternate')),
                 qty=item['qty'],
                 price_at_time=item['price_at_time'],
                 grn_item_id=item.get('grn_item_id'),

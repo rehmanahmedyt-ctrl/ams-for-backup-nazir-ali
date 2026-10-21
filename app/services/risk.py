@@ -133,13 +133,15 @@ def _material_ledger_recent(client_obj, only_booking=True, limit_per_material=5,
         dt_val = _parse_dt_safe(f"{d.date} {d.time}") or _parse_dt_safe(d.date) or datetime.min
         bill_ref = d.bill_no or d.auto_bill_no or ''
         material_display = mat
-        if d.booked_material and d.material and d.booked_material != d.material:
-            material_display = f"{d.booked_material}>ALT>{d.material}"
+        supplied_mat = (d.material or '').strip()
+        if d.booked_material and supplied_mat and d.booked_material != supplied_mat:
+            material_display = f"{supplied_mat} (Alt against {d.booked_material} booking)"
         events_by_material.setdefault(mat, []).append({
             'date_dt': dt_val,
             'date_str': d.date or '',
             'bill_no': bill_ref,
             'material': mat,
+            'supplied_material': supplied_mat or mat,
             'material_display': material_display,
             'qty_added': 0,
             'qty_dispatched': float(d.qty or 0),
@@ -184,8 +186,12 @@ def _material_ledger_current_summary(material_ledger_recent, bill_refs):
         added = sum(float(r.get('qty_added') or 0) for r in matched_sorted)
         last_stock = float(last_row.get('remaining') or 0) - float(last_row.get('qty_added') or 0) + float(last_row.get('qty_dispatched') or 0)
         remaining = float(rows[-1].get('remaining') or 0)
+        summary_label = group.get('material') or ''
+        supplied_on_bill = (last_row.get('supplied_material') or '').strip()
+        if summary_label and supplied_on_bill and summary_label.lower() != supplied_on_bill.lower():
+            summary_label = f"{summary_label} (Fulfilled via {supplied_on_bill})"
         summary.append({
-            'material': last_row.get('material_display') or group.get('material') or '',
+            'material': summary_label or last_row.get('material_display') or '',
             'dispatched': dispatched,
             'added': added,
             'last_stock': last_stock,
