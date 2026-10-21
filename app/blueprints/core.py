@@ -110,6 +110,41 @@ def index():
     sales_breakdown_list = [{'category': k, 'amount': v} for k, v in sales_breakdown.items()]
     sales_breakdown_list.sort(key=lambda x: x['amount'], reverse=True)
 
+    # Exact current profit/loss (MTD) — identical to Profit Reports for same period.
+    dashboard_profit = None
+    dashboard_lifetime = None
+    try:
+        from app.services.profit_svc import get_dashboard_profit, get_lifetime_profit
+        dashboard_profit = get_dashboard_profit()
+        # Lifetime as secondary tooltip/context; keep lightweight — only compute if
+        # dashboard profit succeeded, and tolerate failure.
+        try:
+            dashboard_lifetime = get_lifetime_profit()
+        except Exception:
+            dashboard_lifetime = None
+    except Exception as e:
+        logging.getLogger(__name__).warning("dashboard profit KPI unavailable: %s", e)
+        dashboard_profit = {
+            'amount': 0.0,
+            'total_profit': 0.0,
+            'is_profit': True,
+            'is_loss': False,
+            'label': 'Net Profit',
+            'total_revenue': 0.0,
+            'total_cogs': 0.0,
+            'total_discount_loss': 0.0,
+            'margin_pct': 0.0,
+            'markup_pct': 0.0,
+            'start_date': '',
+            'end_date': '',
+            'period_label': 'Current Month',
+            'period_short': 'Current Month',
+            'profit_rows': 0,
+            'loss_rows': 0,
+            'unknown_cost_rows': 0,
+            'unknown_cost_revenue': 0.0,
+        }
+
     # ``clients`` / ``materials`` dropdowns are injected globally by the
     # inject_dropdown_data context processor (same data, 20s app-level cache);
     # re-loading both full tables here duplicated two scans per dashboard hit.
@@ -121,6 +156,8 @@ def index():
                            daily_cash=daily_cash,
                            daily_credit=daily_credit,
                            total_outstanding=total_outstanding,
-                           sales_breakdown=sales_breakdown_list)
+                           sales_breakdown=sales_breakdown_list,
+                           dashboard_profit=dashboard_profit,
+                           dashboard_lifetime=dashboard_lifetime)
 
 
