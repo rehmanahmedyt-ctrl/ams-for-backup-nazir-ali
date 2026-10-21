@@ -33,17 +33,15 @@
     --ui-info:    #06b6d4;
     --ui-violet:  #8b5cf6;
 
-    /* Shape + rhythm */
-    --ui-radius:    10px;
-    --ui-radius-lg: 16px;
-    --ui-radius-pill: 999px;
+    /* Shape + rhythm
+       --ui-radius / --ui-radius-lg / --ui-radius-pill are declared once in
+       theme.css (token home).  Do not re-declare them here. */
     --ui-shadow-1: 0 4px 12px rgba(2, 6, 23, 0.18);
     --ui-shadow-2: 0 10px 28px rgba(2, 6, 23, 0.28);
     --ui-shadow-hover: 0 16px 36px rgba(2, 6, 23, 0.42);
 
-    /* Form sizing */
-    --ui-field-h:    40px;
-    --ui-field-h-sm: 34px;
+    /* Form sizing — --ui-field-h / --ui-field-h-sm / --ui-field-h-xs live in
+       theme.css (single token home, incl. the ≤575px step). */
     --ui-label-size: 0.78rem;
     --ui-label-tracking: 0.04em;
 
@@ -297,7 +295,9 @@ html[data-theme="light"] {
     width: 100%;
     height: var(--ui-field-h);
     min-height: var(--ui-field-h);
-    background: var(--ui-surface-2);
+    /* background-COLOR, never the background shorthand: the shorthand resets
+       background-image and used to wipe the select chevron (G2). */
+    background-color: var(--ui-surface-2);
     color: var(--ui-text);
     border: 1px solid var(--ui-border-strong);
     border-radius: var(--ui-radius);
@@ -305,12 +305,21 @@ html[data-theme="light"] {
     font-size: 0.92rem;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+
+/* Keep the themed chevron and give it room inside the 12px padding above. */
+.ui-form .ui-select,
+.ui-form .form-select {
+    padding-right: 2rem;
+    background-image: var(--ui-select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.7rem center;
+    background-size: var(--ui-select-chevron-size);
+}
 .ui-form textarea.form-control { height: auto; min-height: 90px; padding: 10px 12px; }
 .ui-form .form-control:focus,
 .ui-form .form-select:focus {
     border-color: var(--ui-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-accent) 25%, transparent);
-    outline: none;
 }
 .ui-form .form-control::placeholder { color: color-mix(in srgb, var(--ui-text-muted) 80%, transparent); }
 .ui-form .ui-actions {
@@ -325,7 +334,7 @@ html[data-theme="light"] {
    Buttons — preserve Bootstrap, just normalise sizing + glow
    ========================================================================= */
 .ui-v2 .btn { min-height: var(--ui-field-h); border-radius: var(--ui-radius); font-weight: 600; }
-.ui-v2 .btn-sm { min-height: var(--ui-field-h-sm); border-radius: 8px; }
+.ui-v2 .btn-sm { min-height: var(--ui-field-h-sm); border-radius: var(--ui-radius-sm); }
 .ui-v2 .btn-pill { border-radius: var(--ui-radius-pill); }
 
 /* =========================================================================
@@ -485,9 +494,17 @@ html[data-theme="light"] {
 .ui-v2 .form-control,
 .ui-v2 .form-select,
 .ui-v2 .input-group-text {
-    background: var(--ui-surface-2) !important;
+    /* background-color only — `background` used to erase the select chevron. */
+    background-color: var(--ui-surface-2) !important;
     border-color: var(--ui-border-strong) !important;
     color: var(--ui-text) !important;
+}
+
+.ui-v2 .form-select {
+    background-image: var(--ui-select-chevron) !important;
+    background-repeat: no-repeat !important;
+    background-position: right 0.75rem center !important;
+    background-size: var(--ui-select-chevron-size) !important;
 }
 .ui-v2 .form-control:focus,
 .ui-v2 .form-select:focus {
@@ -1275,7 +1292,8 @@ html[data-theme="light"] {
 .role-form-field > label > span[aria-hidden="true"] { color: var(--ui-danger); }
 .role-form-field small { color: var(--ui-text-muted); font-size: 0.69rem; line-height: 1.25; }
 .role-form-field .form-control,
-.role-form-field .form-select { min-height: 39px; background: var(--ui-surface-2) !important; border-color: var(--ui-border-strong) !important; }
+.role-form-field .form-select { min-height: 39px; background-color: var(--ui-surface-2) !important; border-color: var(--ui-border-strong) !important; }
+.role-form-field .form-select { background-image: var(--ui-select-chevron) !important; background-repeat: no-repeat !important; background-position: right 0.75rem center !important; background-size: var(--ui-select-chevron-size) !important; }
 .role-form-field .form-control:focus,
 .role-form-field .form-select:focus { border-color: var(--ui-accent) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-accent) 22%, transparent) !important; }
 .role-form-field.is-not-applicable { opacity: 0.68; }

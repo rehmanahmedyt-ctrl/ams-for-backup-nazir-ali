@@ -1,6 +1,6 @@
 # Direct Sales — CSS / Field-Size Review & Fix Plan
 
-**Status:** Plan finalized — decisions confirmed; no code changes yet.
+**Status:** Plan finalized — decisions confirmed. Shared items (token de-duplication, select-chevron background, pagination states) have since landed via `MASTER_CSS_PLAN.md` Phase 1–2; the page-specific work below is still pending.
 **Page:** `/direct_sales` (list + Add Sale sheet + Edit Sale sheet)
 
 **Confirmed decisions**
