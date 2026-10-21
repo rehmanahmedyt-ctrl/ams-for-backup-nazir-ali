@@ -1,58 +1,156 @@
+"""Old Data Migration — analyze on a clone, then append atomically."""
 from __future__ import annotations
-import io, json
-from flask import Blueprint, abort, flash, redirect, render_template, request, send_file, url_for
-from flask_login import current_user, login_required
-from openpyxl import Workbook
-from models import MigrationRun, MigrationRow
-from app.services.legacy_migration import TEMPLATES, template_workbook, validate_upload, import_run
 
-bp=Blueprint('legacy_migration',__name__,url_prefix='/legacy-migration')
-def allowed(): return current_user.role in {'admin','root'} or bool(getattr(current_user,'can_import_export',False))
+import json
+
+from flask import (
+    Blueprint,
+    abort,
+    flash,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
+from flask_login import current_user, login_required
+
+from app.services.old_data_merge import OldDataMergeError
+from app.services.old_data_workflow import (
+    MAX_UPLOAD_BYTES,
+    analyze_file_storage,
+    apply_manifest,
+    list_manifests,
+    load_manifest,
+)
+
+# Keep the internal blueprint name for endpoint compatibility with existing
+# bookmarks/templates. The public product name and canonical URL are new.
+bp = Blueprint("legacy_migration", __name__)
+
+
+def allowed() -> bool:
+    return (
+        getattr(current_user, "role", None) in {"admin", "root"}
+        or bool(getattr(current_user, "can_import_export", False))
+    )
+
+
 def guard():
-    if not allowed(): abort(403)
-@bp.route('/')
+    if not allowed():
+        abort(403)
+
+
+def _actor() -> str:
+    return str(getattr(current_user, "username", None) or "admin")
+
+
+@bp.route("/old-data-migration/", methods=["GET"])
 @login_required
 def dashboard():
-    guard(); runs=MigrationRun.query.order_by(MigrationRun.created_at.desc()).limit(50).all()
-    completed={r.template_type for r in runs if r.status=='COMPLETED'}
-    return render_template('legacy_migration.html',templates=TEMPLATES,runs=runs,completed=completed)
-@bp.route('/template/<kind>')
-@login_required
-def download(kind):
     guard()
-    if kind not in TEMPLATES: abort(404)
-    buf=io.BytesIO(); template_workbook(kind).save(buf); buf.seek(0)
-    return send_file(buf,as_attachment=True,download_name=TEMPLATES[kind]['file'],mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-@bp.route('/upload',methods=['POST'])
+    return render_template("old_data_migration.html", runs=list_manifests())
+
+
+@bp.route("/old-data-migration/analyze", methods=["POST"])
 @login_required
-def upload():
-    guard(); kind=(request.form.get('template_type') or '').upper(); file=request.files.get('file')
-    if not file or not file.filename.lower().endswith('.xlsx'): flash('Choose an official .xlsx template.', 'danger'); return redirect(url_for('.dashboard'))
+def analyze():
+    guard()
+    if request.content_length and request.content_length > MAX_UPLOAD_BYTES + 5 * 1024 * 1024:
+        flash("Upload refused: the old database is larger than the 1 GiB limit.", "danger")
+        return redirect(url_for("legacy_migration.dashboard"))
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        flash("Choose an old AMS .amsdb or .db file.", "danger")
+        return redirect(url_for("legacy_migration.dashboard"))
     try:
-        run,_=validate_upload(kind,file.read(),file.filename,current_user.username)
-        flash(f'Validation complete for run #{run.id}. Review the preview before importing.', 'success')
-        return redirect(url_for('.preview',run_id=run.id))
-    except ValueError as exc: flash(str(exc),'danger'); return redirect(url_for('.dashboard'))
-@bp.route('/run/<int:run_id>')
+        manifest = analyze_file_storage(upload, _actor())
+    except OldDataMergeError as exc:
+        flash(f"Old data analysis refused: {exc}", "danger")
+        return redirect(url_for("legacy_migration.dashboard"))
+    except Exception as exc:
+        flash(f"Old data analysis failed safely; no current rows changed: {exc}", "danger")
+        return redirect(url_for("legacy_migration.dashboard"))
+    flash(
+        "Safety analysis passed on a separate database copy. Review the report "
+        "before appending.",
+        "success",
+    )
+    return redirect(url_for("legacy_migration.preview", token=manifest["token"]))
+
+
+@bp.route("/old-data-migration/run/<token>", methods=["GET"])
 @login_required
-def preview(run_id):
-    guard(); run=MigrationRun.query.get_or_404(run_id); rows=MigrationRow.query.filter_by(run_id=run.id).order_by(MigrationRow.source_sheet,MigrationRow.source_row).all()
-    return render_template('legacy_migration_preview.html',run=run,rows=rows,summary=json.loads(run.summary_json or '{}'))
-@bp.route('/run/<int:run_id>/dry-run',methods=['POST'])
+def preview(token):
+    guard()
+    try:
+        manifest = load_manifest(token)
+    except OldDataMergeError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("legacy_migration.dashboard"))
+    return render_template("old_data_migration_preview.html", manifest=manifest)
+
+
+@bp.route("/old-data-migration/run/<token>/apply", methods=["POST"])
 @login_required
-def dry_run(run_id):
-    guard(); run=MigrationRun.query.get_or_404(run_id); flash('Dry run is non-destructive: '+(run.summary_json or '{}')+'. No production records were changed.','info'); return redirect(url_for('.preview',run_id=run.id))
-@bp.route('/run/<int:run_id>/import',methods=['POST'])
+def apply(token):
+    guard()
+    if request.form.get("confirm_append") != "yes":
+        flash("Confirm that you reviewed the verified append report.", "warning")
+        return redirect(url_for("legacy_migration.preview", token=token))
+    try:
+        manifest = apply_manifest(token, _actor())
+    except OldDataMergeError as exc:
+        flash(f"Import refused safely: {exc}", "danger")
+        return redirect(url_for("legacy_migration.preview", token=token))
+    except Exception as exc:
+        flash(
+            f"Import failed and was rolled back; current business rows remain unchanged: {exc}",
+            "danger",
+        )
+        return redirect(url_for("legacy_migration.preview", token=token))
+    report = manifest.get("report") or {}
+    flash(
+        f"Old data appended safely: {report.get('rows_inserted_total', 0)} records "
+        f"created, {report.get('rows_already_imported', 0)} already imported, "
+        "0 existing business rows modified or deleted.",
+        "success",
+    )
+    return redirect(url_for("legacy_migration.preview", token=token))
+
+
+@bp.route("/old-data-migration/run/<token>/report.json", methods=["GET"])
 @login_required
-def do_import(run_id):
-    guard(); run=MigrationRun.query.get_or_404(run_id)
-    try: flash(f'Import completed: {import_run(run)} records created.','success')
-    except ValueError as exc: flash(str(exc),'warning')
-    return redirect(url_for('.preview',run_id=run.id))
-@bp.route('/run/<int:run_id>/errors.xlsx')
+def report(token):
+    guard()
+    try:
+        manifest = load_manifest(token)
+    except OldDataMergeError as exc:
+        return str(exc), 404
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    from io import BytesIO
+
+    return send_file(
+        BytesIO(payload),
+        as_attachment=True,
+        download_name=f"old_data_migration_{token}.json",
+        mimetype="application/json",
+        max_age=0,
+    )
+
+
+# Backward-compatible public route. No old write endpoint is retained: stale
+# template-import POSTs are redirected to the new fail-closed workflow.
+@bp.route("/legacy-migration/", methods=["GET"])
 @login_required
-def errors(run_id):
-    guard(); run=MigrationRun.query.get_or_404(run_id); wb=Workbook(); ws=wb.active; ws.title='MIGRATION_ERRORS'; ws.append(['Source File','Sheet','Excel Row','Column','Problem','Suggested Action','Status'])
-    for row in run.rows:
-        for e in json.loads(row.error_json or '[]'): ws.append([run.filename,e.get('sheet'),e.get('row'),e.get('column'),e.get('problem'),e.get('suggested_action'),e.get('status')])
-    buf=io.BytesIO(); wb.save(buf); buf.seek(0); return send_file(buf,as_attachment=True,download_name=f'migration_run_{run.id}_errors.xlsx')
+def legacy_dashboard_redirect():
+    guard()
+    return redirect(url_for("legacy_migration.dashboard"), code=301)
+
+
+@bp.route("/legacy-migration/<path:unused>", methods=["GET", "POST"])
+@login_required
+def legacy_route_redirect(unused):
+    guard()
+    flash("Legacy Data Migration was replaced by the safer Old Data Migration.", "info")
+    return redirect(url_for("legacy_migration.dashboard"), code=303)

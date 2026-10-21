@@ -85,9 +85,12 @@
                         <div class="ui-field mb-3">
                             <label for="fullDbMode" class="ui-label">Import mode</label>
                             <select id="fullDbMode" name="mode" class="form-select">
-                                <option value="clean_replace" selected>Full sync — clean all data first, then copy the file (recommended)</option>
-                                <option value="append">Append — keep existing rows, only add new IDs from the file</option>
+                                <option value="clean_replace" selected>Full sync — clean all data first, then copy the file</option>
                             </select>
+                            <div class="form-text text-white-50">
+                                Need to append an older database without replacing current records?
+                                Use <a href="{{ url_for('legacy_migration.dashboard') }}">Old Data Migration</a>, which safely remaps IDs and relationships first.
+                            </div>
                         </div>
                         <div class="alert alert-warning small py-2 mb-3">
                             <i class="bi bi-exclamation-triangle me-1"></i>

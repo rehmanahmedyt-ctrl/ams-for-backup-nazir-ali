@@ -1,0 +1,103 @@
+{% extends 'layout.html' %}
+{% block content %}
+{% set r = manifest.report or {} %}
+<div class="container-fluid py-2">
+  <a href="{{ url_for('legacy_migration.dashboard') }}" class="btn btn-outline-secondary btn-sm mb-3">
+    <i class="bi bi-arrow-left"></i> Old Data Migration
+  </a>
+
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-4">
+    <div>
+      <h2 class="mb-1">Verified append report</h2>
+      <div class="text-muted">{{ manifest.filename }} · {{ (manifest.source_hash or '')[:12] }}…</div>
+    </div>
+    <span class="badge fs-6 text-bg-{{ 'success' if manifest.status == 'COMPLETED' else 'primary' if manifest.status == 'READY' else 'secondary' }}">{{ manifest.status }}</span>
+  </div>
+
+  {% if manifest.last_error %}
+  <div class="alert alert-danger"><strong>Last attempt was refused:</strong> {{ manifest.last_error }}</div>
+  {% endif %}
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Verification</small><h4 class="text-success mb-0">{{ r.verification or '-' }}</h4></div></div></div>
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Business tables</small><h4 class="mb-0">{{ r.business_tables or 0 }}</h4></div></div></div>
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Source rows</small><h4 class="mb-0">{{ r.source_business_rows or 0 }}</h4></div></div></div>
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Will append</small><h4 class="text-primary mb-0">{{ r.rows_inserted_total or 0 }}</h4></div></div></div>
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Already imported</small><h4 class="mb-0">{{ r.rows_already_imported or 0 }}</h4></div></div></div>
+    <div class="col-6 col-lg-2"><div class="card h-100"><div class="card-body"><small class="text-muted">Existing changed</small><h4 class="text-success mb-0">{{ r.existing_business_rows_modified or 0 }}</h4></div></div></div>
+  </div>
+
+  <div class="alert alert-success">
+    <div class="fw-bold mb-1"><i class="bi bi-shield-check me-1"></i>Safety proof passed on a separate copy</div>
+    {{ r.existing_business_rows_verified_unchanged or 0 }} current business records were compared before and after:
+    <strong>0 modified, 0 deleted</strong>. Foreign-key violations: <strong>{{ r.foreign_key_violations or 0 }}</strong>.
+  </div>
+
+  {% if (r.master_collisions_namespaced or 0) or (r.references_rewritten or 0) %}
+  <div class="alert alert-info">
+    To prevent ambiguity, AMS safely namespaced {{ r.master_collisions_namespaced or 0 }} colliding master values and
+    {{ r.references_rewritten or 0 }} bill/reference values. Original-to-current mappings are retained permanently.
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+    <div class="col-xl-8">
+      <section class="card">
+        <div class="card-body p-4">
+          <h5>Business rows by table</h5>
+          <div class="table-responsive" style="max-height:430px">
+            <table class="table table-sm align-middle">
+              <thead class="sticky-top"><tr><th>Table</th><th class="text-end">New</th><th class="text-end">Already imported</th></tr></thead>
+              <tbody>
+              {% for table, count in (r.inserted_by_table or {})|dictsort %}
+                {% set skipped = (r.skipped_by_table or {}).get(table, 0) %}
+                {% if count or skipped %}<tr><td><code>{{ table }}</code></td><td class="text-end">{{ count }}</td><td class="text-end">{{ skipped }}</td></tr>{% endif %}
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div class="col-xl-4">
+      <section class="card mb-3">
+        <div class="card-body p-4">
+          <h5>Protected technical data</h5>
+          <p class="small text-muted">These old runtime rows are intentionally not copied into the current application.</p>
+          <ul class="small mb-0">
+          {% for table, count in (r.technical_rows_excluded or {})|dictsort %}
+            <li><code>{{ table }}</code>: {{ count }}</li>
+          {% else %}<li>None present</li>{% endfor %}
+          </ul>
+        </div>
+      </section>
+      <a class="btn btn-outline-info w-100 mb-3" href="{{ url_for('legacy_migration.report', token=manifest.token) }}">
+        <i class="bi bi-download me-1"></i>Download complete JSON report
+      </a>
+    </div>
+  </div>
+
+  {% if manifest.status == 'READY' %}
+  <section class="card border-warning mt-4">
+    <div class="card-body p-4">
+      <h4 class="text-warning"><i class="bi bi-database-check me-1"></i>Ready to append</h4>
+      <p>A fresh backup will be created first. The final operation uses one transaction: all verified rows commit together or everything rolls back.</p>
+      <form method="post" action="{{ url_for('legacy_migration.apply', token=manifest.token) }}"
+            onsubmit="return confirm('Append all verified old business records now? A backup will be created first.');">
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" value="yes" name="confirm_append" id="confirmAppend" required>
+          <label class="form-check-label" for="confirmAppend">I reviewed the safety summary and want to append this verified file.</label>
+        </div>
+        <button class="btn btn-warning btn-lg w-100" type="submit"><i class="bi bi-database-add me-1"></i>Append verified old data</button>
+      </form>
+    </div>
+  </section>
+  {% elif manifest.status == 'COMPLETED' %}
+  <div class="alert alert-success mt-4 mb-0">
+    <h5 class="alert-heading"><i class="bi bi-check-circle me-1"></i>Import completed</h5>
+    All imported records are normal current-schema records and are available through the application's regular read/write screens.
+    {% if manifest.backup_path %}<div class="small mt-2">Pre-import backup: <code>{{ manifest.backup_path }}</code></div>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
