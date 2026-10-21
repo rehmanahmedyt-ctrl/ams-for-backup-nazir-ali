@@ -232,7 +232,9 @@
 }
 .sale-form .form-control,
 .sale-form .form-select {
-    background: var(--ui-surface-2, #1a2332) !important;
+    /* background-color (not the background shorthand) so the shared
+       theme-aware select chevron survives inside sale sheets. */
+    background-color: var(--ui-surface-2, #1a2332) !important;
     border-color: var(--ui-border-strong, #3b465c) !important;
     color: var(--ui-text, #fff) !important;
 }

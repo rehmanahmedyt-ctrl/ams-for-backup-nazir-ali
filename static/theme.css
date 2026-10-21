@@ -21,8 +21,44 @@
     --ui-gap-sm: 0.5rem;
     --ui-gap-md: 0.75rem;
     --ui-label-h: 1rem;
-    --ui-field-h: 38px;
-    --ui-field-h-sm: 32px;
+
+    /* ------------------------------------------------------------------
+       SINGLE TOKEN HOME (Master CSS Plan — Phase 1)
+       Everything below is declared here and only here.  ui.css and the
+       page <style> blocks consume these names, they never re-declare
+       them.
+       Desktop values are the ones ui.css used to force (40/34), so no
+       page moves.  Phones now really get the plan's compact step
+       (34/30): the old theme.css mobile override was dead because
+       ui.css re-declared :root later in the cascade.
+       ------------------------------------------------------------------ */
+
+    /* Control scale: default / compact / icon */
+    --ui-field-h: 40px;
+    --ui-field-h-sm: 34px;
+    --ui-field-h-xs: 30px;
+
+    /* Radius scale: chip / control / card / pill */
+    --ui-radius-sm: 6px;
+    --ui-radius: 10px;
+    --ui-radius-lg: 16px;
+    --ui-radius-pill: 999px;
+
+    /* Type scale (8 steps) */
+    --ui-font-hint: 0.72rem;
+    --ui-font-label: 0.78rem;
+    --ui-font-body-sm: 0.875rem;
+    --ui-font-body: 1rem;
+    --ui-font-title: 1.15rem;
+    --ui-font-page-title: 1.35rem;
+
+    /* Shared input surface (aliases of the theme input palette) */
+    --ui-input-bg: var(--input-bg);
+    --ui-input-border: var(--input-border);
+
+    /* Theme-aware select chevron (light stroke on dark surfaces) */
+    --ui-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='10' viewBox='0 0 14 10' fill='none'%3E%3Cpath d='M1 1.5L7 8l6-6.5' stroke='%23cbd5e1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --ui-select-chevron-size: 14px 10px;
 }
 
 html[data-theme="light"] {
@@ -44,6 +80,9 @@ html[data-theme="light"] {
     --bs-body-bg: var(--surface-0);
     --bs-body-color: var(--text-primary);
     --bs-tertiary-bg: var(--surface-1);
+
+    /* Dark stroke chevron on light surfaces */
+    --ui-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='10' viewBox='0 0 14 10' fill='none'%3E%3Cpath d='M1 1.5L7 8l6-6.5' stroke='%23475569' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 html, body {
@@ -97,6 +136,30 @@ html, body {
 
 .table tbody tr {
     background: var(--table-row) !important;
+}
+
+/*
+ * Row hover (Master CSS Plan — Phase 2 / G3).
+ * The rule above paints an opaque `!important` background on <tr>, so any
+ * tr-level :hover rule could never win.  Painting the cells instead puts the
+ * hover tint on top of that background (a cell always paints above its row),
+ * which restores pointer feedback on every plain .table without touching
+ * striping or .ui-table's own hover rules.
+ */
+.table:not(.ui-table) tbody tr:hover:not(.entry-highlighted) > td,
+.table:not(.ui-table) tbody tr:hover:not(.entry-highlighted) > th {
+    background-color: color-mix(in srgb, var(--accent) 9%, var(--table-row)) !important;
+}
+
+.table:not(.ui-table) tbody tr.is-clickable:hover:not(.entry-highlighted) > td,
+.table:not(.ui-table) tbody tr[data-href]:hover:not(.entry-highlighted) > td {
+    background-color: color-mix(in srgb, var(--accent) 13%, var(--table-row)) !important;
+}
+
+/* Starred rows (.entry-highlighted, ledgers/GRN) must keep their amber
+   highlight; hover only deepens it through a translucent tint. */
+.table tbody tr.entry-highlighted:hover > td {
+    background-color: color-mix(in srgb, var(--accent) 18%, transparent) !important;
 }
 
 html[data-theme="light"] .table-dark {
@@ -170,6 +233,26 @@ html[data-theme="light"] .badge.bg-dark {
 }
 
 /*
+ * Theme-aware select chevron (Master CSS Plan — Phase 2 / G2).
+ * Bootstrap ships a dark arrow (#343a40) that disappears on dark inputs, and
+ * several page kits wiped it entirely by using the `background` shorthand
+ * (which resets background-image).  One themed SVG keeps the arrow visible in
+ * both themes; page rules must use background-color, never background.
+ */
+.form-select {
+    background-image: var(--ui-select-chevron) !important;
+    background-repeat: no-repeat !important;
+    background-position: right 0.75rem center !important;
+    background-size: var(--ui-select-chevron-size) !important;
+}
+
+/* Keyboard focus contract (Master CSS Plan — Phase 2 / G12). */
+:where(a, button, .btn, .page-link, .nav-link, .form-check-input, .btn-close, [tabindex]):focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent) !important;
+    outline-offset: 2px !important;
+}
+
+/*
  * App-wide action-button contract.
  * Standard, small, and large actions each have one predictable height and
  * padding. Width remains content-aware; w-100/flex utilities still work.
@@ -179,7 +262,7 @@ html[data-theme="light"] .badge.bg-dark {
 .btn:not(.btn-link):not(.btn-close):not(.btn-special) {
     min-height: var(--ui-field-h) !important;
     padding: 0.42rem 0.9rem !important;
-    border-radius: 9px;
+    border-radius: var(--ui-radius);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -195,14 +278,14 @@ html[data-theme="light"] .badge.bg-dark {
 .input-group-sm > .btn:not(.btn-link):not(.btn-close):not(.btn-special) {
     min-height: var(--ui-field-h-sm) !important;
     padding: 0.3rem 0.68rem !important;
-    border-radius: 8px;
+    border-radius: var(--ui-radius-sm);
     font-size: 0.8rem;
 }
 
 .btn-lg:not(.btn-link):not(.btn-close):not(.btn-special) {
     min-height: 46px !important;
     padding: 0.62rem 1.15rem !important;
-    border-radius: 11px;
+    border-radius: var(--ui-radius);
     font-size: 1rem;
 }
 
@@ -283,7 +366,24 @@ textarea.form-control {
     display: block;
 }
 
+/*
+ * Action rows (Master CSS Plan — Phase 2 / G7).
+ * Apply/Reset belong side by side on one line, right-aligned under the
+ * inputs.  .ui-actions-col stays a single-button stack because templates use
+ * it as a one-button 1-column grid cell (bookings, payments, returns);
+ * .filter-actions is the shared horizontal row new/updated markup can adopt
+ * without any further CSS.
+ */
 .ui-helper-form .form-action-row,
+.ui-helper-form .filter-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 .ui-helper-form .ui-actions-col {
     display: flex;
     flex-direction: column;
@@ -296,8 +396,13 @@ textarea.form-control {
         --ui-gap-sm: 0.4rem;
         --ui-gap-md: 0.5rem;
         --ui-label-h: 0.9rem;
+        /* Phone step of the control scale (40 / 34 / 30 contract).
+           These were dead while ui.css re-declared :root later in the
+           cascade; Phase 1 removed that duplicate, so phones now get the
+           compact 34/30 controls the plan specifies. */
         --ui-field-h: 34px;
         --ui-field-h-sm: 30px;
+        --ui-field-h-xs: 30px;
     }
 
     .ui-helper-form .row.form-grid-top {
@@ -339,8 +444,16 @@ textarea.form-control {
         gap: var(--ui-gap-xs);
     }
 
+    /* Phones: action rows stack full-width instead of squeezing sideways. */
+    .ui-helper-form .form-action-row,
+    .ui-helper-form .filter-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
     .ui-helper-form .ui-actions-col .btn,
-    .ui-helper-form .form-action-row .btn {
+    .ui-helper-form .form-action-row .btn,
+    .ui-helper-form .filter-actions .btn {
         width: 100%;
     }
 }
@@ -374,6 +487,41 @@ html[data-theme="light"] .btn-close.btn-close-white {
     color: var(--text-primary) !important;
 }
 
+/*
+ * Pagination states (Master CSS Plan — Phase 2 / G4).
+ * The block above forced identical colours on every .page-link, so the
+ * current page looked exactly like its neighbours and bg-warning/active
+ * utilities could never show.  Active is now an accent fill; hover and
+ * disabled states are explicit.  Hover is scoped away from .active so the
+ * current page keeps its accent fill while the pointer is on it.
+ */
+.pagination .page-item:not(.active) > .page-link:hover {
+    background-color: color-mix(in srgb, var(--accent) 16%, var(--surface-2)) !important;
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-color)) !important;
+    color: var(--text-primary) !important;
+}
+
+.pagination .page-item.active > .page-link,
+.pagination .page-item.active > span.page-link {
+    background-color: var(--accent) !important;
+    border-color: var(--accent) !important;
+    color: #111827 !important;
+    font-weight: 700;
+}
+
+.pagination .page-item.disabled > .page-link,
+.pagination .page-item.disabled > span.page-link {
+    background-color: var(--surface-2) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-muted) !important;
+    opacity: 0.6;
+}
+
+html[data-theme="light"] .pagination .page-item.active > .page-link,
+html[data-theme="light"] .pagination .page-item.active > span.page-link {
+    color: #111827 !important;
+}
+
 .badge.bg-dark {
     background: var(--surface-2) !important;
     color: var(--text-primary) !important;
@@ -384,18 +532,39 @@ html[data-theme="light"] .btn-close.btn-close-white {
     border-color: var(--border-color) !important;
 }
 
+/*
+ * Combobox popup (Master CSS Plan — Phase 2 / G8).
+ * Was hard-coded peach (#ffe7c2) with a cream/green hover in BOTH themes,
+ * which is why every client/material picker opened a cream box over dark
+ * modals.  Now driven by theme tokens so the popup matches its surface in
+ * dark and light mode.  Out-!important-ed on purpose: Bootstrap utilities and
+ * the legacy peach rules in layout.html must not repaint it.
+ */
 .combobox-list {
-    background: #ffe7c2 !important;
-    border-color: #f59e0b !important;
+    background: var(--surface-1) !important;
+    border: 1px solid var(--border-strong, var(--border-color)) !important;
+    color: var(--text-primary) !important;
 }
 
 .combobox-item {
-    color: #1f2937 !important;
-    border-color: #f7c97a !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
 }
 
-.combobox-item:hover {
-    background: #dcfce7 !important;
+.combobox-item:hover,
+.combobox-item.active,
+.combobox-item[aria-selected="true"] {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface-1)) !important;
+    color: var(--text-primary) !important;
+}
+
+html[data-theme="light"] .combobox-list {
+    background: var(--surface-1) !important;
+    border-color: var(--border-strong) !important;
+}
+
+html[data-theme="light"] .combobox-item {
+    color: var(--text-primary) !important;
 }
 
 /* Map old hardcoded inline dark colors to theme tokens */

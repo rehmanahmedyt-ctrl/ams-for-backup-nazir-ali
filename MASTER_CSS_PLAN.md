@@ -1,6 +1,6 @@
 # Master CSS Plan — Visual Perfection for Every App Page
 
-**Status:** Plan only (docs) — no code changes in this PR. This is the app-wide companion to `DIRECT_SALES_CSS_PLAN.md`.
+**Status:** Phases 1 and 2 are **implemented** (CSS-only — see §12 *Implementation status*). Phases 3–12 remain planned. This is the app-wide companion to `DIRECT_SALES_CSS_PLAN.md`.
 **Scope:** all **120 templates** / every routed page. **CSS-only**: changes live in `static/theme.css`, `static/ui.css`, `static/pan_view.css`, `templates/layout.html`'s `<style>`, and per-page `<style>` blocks. No markup restructure, no JS, no Python, no route changes.
 
 **Confirmed decisions**
@@ -321,3 +321,61 @@ Run `pytest` after every phase (no CSS tests exist; regression safety is the sui
 | Execution | Phase 0 → 1 → 2, then families A–I, sweep last; one commit per phase-step; `pytest` after each |
 
 **Start order:** Phase 0 screenshots → Phase 1 tokens (zero-diff) → Phase 2 global contract (the visible win). Everything else is family polish on a stable base.
+
+---
+
+## 12. Implementation status
+
+### Done — Phase 1: single token home (visually inert on desktop)
+
+| Change | File | Detail |
+|---|---|---|
+| Control scale declared once | `theme.css` `:root` | `--ui-field-h: 40px`, `--ui-field-h-sm: 34px`, new `--ui-field-h-xs: 30px` |
+| Phone step now live | `theme.css` `@media (max-width:575.98px)` | `34 / 30 / 30` — the override already existed but was **dead**: `ui.css` re-declared `:root` later in the cascade, so phones were getting the desktop 40/34 |
+| Radius scale declared once | `theme.css` `:root` | `--ui-radius-sm: 6px`, `--ui-radius: 10px`, `--ui-radius-lg: 16px`, `--ui-radius-pill: 999px`; duplicates removed from `ui.css` |
+| Type scale aliases | `theme.css` `:root` | `--ui-font-hint/label/body-sm/body/title/page-title` |
+| Input surface aliases | `theme.css` `:root` | `--ui-input-bg` / `--ui-input-border` (alias the existing palette — no repaint yet) |
+| Chevron tokens | `theme.css` `:root` + light block | `--ui-select-chevron` (light stroke on dark, dark stroke on light), `--ui-select-chevron-size` |
+| Duplicates deleted | `ui.css` `:root` | `--ui-field-h*` and `--ui-radius*` no longer re-declared |
+
+Desktop computed values are unchanged (40/34, radius 10/16/999). The only intentional delta is the phone step: ≤575 px controls now measure 34/30 instead of inheriting 40/34.
+
+### Done — Phase 2: shared component contract
+
+| # | Item | Where | Result |
+|---|---|---|---|
+| 2.1 | **Select chevron (G2)** | `theme.css` `.form-select`; `ui.css` `.ui-form`, `.ui-v2`, `.role-form-field`; `direct_sales.html` sale-sheet rule | `background` shorthand replaced with `background-color` everywhere it wiped the arrow; one themed SVG arrow (`14×10`, right `.75rem` centre) now shows on **every** select in both themes, including the sale-sheet kit |
+| 2.2 | **Table row hover (G3)** | `theme.css` after the `tbody tr` rule | The opaque `!important` row background is untouched (stripes/state safe); hover tints `tr:hover > td` instead, which paints above it. Every plain `.table` now has pointer feedback; `.ui-table` keeps its own hover rules; `is-clickable`/`data-href` rows tint deeper |
+| 2.3 | **Pagination states (G4)** | `theme.css` `.pagination` | Active page = accent fill (beats `bg-warning`/`text-dark` utilities by specificity), hover = accent tint, disabled dimmed. No `pointer-events` tricks — interaction unchanged |
+| 2.4 | **Input palette (G5)** | — | *Deferred* (see below) |
+| 2.5 | **Combobox popup (G8)** | `theme.css` + `layout.html` inline | Peach `#ffe7c2` / cream `#dcfce7` replaced by `--surface-1` + accent `color-mix` hover; light-mode block too. No cream popup over dark modals |
+| 2.6 | **Focus-visible (G12)** | `theme.css` `:where(...)` | One 3 px accent ring for links, buttons, page-links, nav-links, checks, close buttons, `[tabindex]`; keyboard-only. Removed the `outline: none` that suppressed it in `.ui-form` focus (the ring now comes from `box-shadow`) |
+| 2.7 | **Filter action rows (G7)** | `theme.css` | `.form-action-row` / `.filter-actions` are now horizontal, right-aligned, 8 px gap (stacked full-width ≤575 px). `.ui-actions-col` deliberately still stacks — templates use it as a one-button grid cell |
+| 2.8 | **Radius snap (G11, partial)** | `theme.css`, `ui.css` | `btn` 9→`var(--ui-radius)` (10), `btn-sm` 8→`var(--ui-radius-sm)` (6), `btn-lg` 11→10, `.ui-v2 .btn-sm` 8→6. The 12/14→16 card snap stays with the family phases |
+
+### Deliberately deferred (recorded, not done)
+
+- **2.4 Input palette merge (G5).** Collapsing `--input-bg`, `--ui-surface-2` and `bg-dark` into one grey repaints `.ui-v2`/accounts/utility-soup inputs in *both* themes. That is a design decision per family, not a bug fix, so it belongs with Phases 4/6/9. Aliases (`--ui-input-bg`) are in place so the merge is a one-line change later.
+- **Type snap (G10).** Micro-fonts (0.62–0.71 rem) are not force-snapped to 0.72 rem yet: it can reflow dense tables and is best done page by page.
+- **Table header typography (uppercase 0.72 rem), mobile card-stack, sticky-header policy.** Visible re-flow on 100+ tables; Phase 6 owns them.
+- **Direct Sales page chrome.** Only the shared chevron line changed there; the rest stays with `DIRECT_SALES_CSS_PLAN.md`.
+
+### Files changed
+
+`static/theme.css`, `static/ui.css`, `templates/layout.html` (`<style>` block only), `templates/direct_sales.html` (`<style>` block only).
+
+No Python, no JS, no routes, no markup structure — every edit is inside a CSS file or a `<style>` block.
+
+### Verification
+
+- `pytest`: **268 passed, 6 skipped** (same as before the change).
+- `tinycss2` parse of `theme.css` / `ui.css` / `pan_view.css`: **0 rule errors, 0 declaration errors**.
+- Token grep: one declaration each for `--ui-field-h*`, `--ui-radius*`, `--ui-select-chevron*` (light-theme chevron and the phone step are the only intentional overrides).
+- `!important` accounting: `theme.css` 163 → 189, `ui.css` 84 → 92. Every new one is documented in place and exists to beat an *earlier global* (`theme.css`'s own pagination/table rules, Bootstrap utilities, page-level `outline:none`). The net reduction is Phase 12's job, once the page-local duplicates that force them are deleted.
+- Static contract harness (dark + light, 1440/1024/768/390) covering: 6 select variants, hover rows, pagination states, combobox, control scale, focus ring.
+- Still to capture from the running app before Phase 3: **Phase 0 screenshots**, then diff them against a re-capture now to confirm the deltas are only the five intended ones (chevron, hover, pagination active, combobox surface, phone control height).
+
+### Rollback
+
+Each item is an independent, comment-tagged block (`G2`, `G3`, `G4`, `G8`, `G12`); reverting one block restores the previous look without touching the others. Phase 1 is a token move — restoring the two deleted `ui.css` declarations puts the app back to its old cascade.
+
